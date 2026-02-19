@@ -22,10 +22,11 @@ import { buildJsonResult } from "@/lib/jsonBuilder";
 const EXPECTED_HEADER =
   "transaction_id,sender_id,receiver_id,amount,timestamp";
 
+// Hoisted to avoid recompilation on every call
+const TS_REGEX = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/;
+
 function parseTimestampStrict(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(
-    value.trim(),
-  );
+  const match = TS_REGEX.exec(value.trim());
   if (!match) return null;
   const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match;
   const year = Number(yearStr);
@@ -126,12 +127,15 @@ function buildGraphElements(
   transactions: Transaction[],
   accountContexts: Map<string, AccountScoreContext>,
 ): { nodes: GraphNodeInfo[]; edges: GraphEdgeInfo[] } {
+  // Pre-build O(1) lookup map instead of O(S) find per account
+  const suspiciousMap = new Map(
+    analysis.suspicious_accounts.map((acc) => [acc.account_id, acc]),
+  );
+
   const nodes: GraphNodeInfo[] = [];
 
   for (const [accountId, ctx] of accountContexts) {
-    const suspiciousEntry = analysis.suspicious_accounts.find(
-      (acc) => acc.account_id === accountId,
-    );
+    const suspiciousEntry = suspiciousMap.get(accountId);
     const suspicionScore = suspiciousEntry?.suspicion_score ?? 0;
     const detectedPatterns = suspiciousEntry
       ? suspiciousEntry.detected_patterns

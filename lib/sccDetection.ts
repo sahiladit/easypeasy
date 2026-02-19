@@ -47,6 +47,25 @@ interface DetectedCycle {
 // Wraps GraphData.adjacencyOut and GraphData.edges — zero re-parsing of topology
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Shared empty sentinel — avoids allocating new Set() on every neighbors() miss
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+const EMPTY_ARR: readonly TxEdge[] = [];
+
+// Binary search: find index of first element with timestamp > target
+function lowerBoundAfter(arr: TxEdge[], afterTs: number): number {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid]!.timestamp <= afterTs) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
 class MuleGraph {
   adjacencyOut: Map<string, Set<string>>;
   edgeMap: Map<string, TxEdge[]>; // "source|target" → sorted TxEdge[]
@@ -55,6 +74,7 @@ class MuleGraph {
   degree: Map<string, number> = new Map();
   allNodes: Set<string>;
   private cache: Map<string, TxEdge | null> = new Map();
+  private closingCache: Map<string, boolean> = new Map();
 
   constructor(graph: GraphData) {
     this.adjacencyOut = graph.adjacencyOut;
@@ -97,12 +117,12 @@ class MuleGraph {
     }
   }
 
-  neighbors(node: string): Set<string> {
-    return this.adjacencyOut.get(node) ?? new Set();
+  neighbors(node: string): ReadonlySet<string> {
+    return this.adjacencyOut.get(node) ?? EMPTY_SET;
   }
 
-  edges(source: string, target: string): TxEdge[] {
-    return this.edgeMap.get(`${source}|${target}`) ?? [];
+  edges(source: string, target: string): readonly TxEdge[] {
+    return this.edgeMap.get(`${source}|${target}`) ?? EMPTY_ARR;
   }
 
   isEligible(node: string, p: DetectionParams): boolean {
@@ -129,16 +149,20 @@ class MuleGraph {
     const key = `${source}|${target}|${afterTs}|${lastAmount}|${firstAmount}`;
     if (this.cache.has(key)) return this.cache.get(key)!;
 
-    const lo = lastAmount * (1 - p.epsDown);
-    const hi = lastAmount * (1 + p.epsUp);
+    const amountLo = lastAmount * (1 - p.epsDown);
+    const amountHi = lastAmount * (1 + p.epsUp);
     const centre = (firstAmount * (p.cumMin + p.cumMax)) / 2;
+
+    const txList = this.edges(source, target);
+    // Binary search: skip all edges with timestamp <= afterTs
+    const startIdx = lowerBoundAfter(txList as TxEdge[], afterTs);
 
     let best: TxEdge | null = null;
     let bestDist = Infinity;
 
-    for (const tx of this.edges(source, target)) {
-      if (tx.timestamp <= afterTs) continue;
-      if (tx.amount < lo || tx.amount > hi) continue;
+    for (let i = startIdx; i < txList.length; i++) {
+      const tx = txList[i]!;
+      if (tx.amount < amountLo || tx.amount > amountHi) continue;
       const ratio = tx.amount / firstAmount;
       if (ratio < p.cumMin || ratio > p.cumMax) continue;
       const dist = Math.abs(tx.amount - centre);
@@ -153,18 +177,34 @@ class MuleGraph {
   }
 
   // Used for lookahead pruning at penultimate DFS depth
-  closingEdges(
+  // Returns true if at least one viable closing edge exists (cached)
+  hasClosingEdge(
     source: string,
     target: string,
     afterTs: number,
     lastAmount: number,
     p: DetectionParams,
-  ): TxEdge[] {
-    const lo = lastAmount * (1 - p.epsDown);
-    const hi = lastAmount * (1 + p.epsUp);
-    return this.edges(source, target).filter(
-      (tx) => tx.timestamp > afterTs && tx.amount >= lo && tx.amount <= hi,
-    );
+  ): boolean {
+    const key = `${source}|${target}|${afterTs}|${lastAmount}`;
+    const cached = this.closingCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const amountLo = lastAmount * (1 - p.epsDown);
+    const amountHi = lastAmount * (1 + p.epsUp);
+    const txList = this.edges(source, target);
+    const startIdx = lowerBoundAfter(txList as TxEdge[], afterTs);
+
+    let found = false;
+    for (let i = startIdx; i < txList.length; i++) {
+      const tx = txList[i]!;
+      if (tx.amount >= amountLo && tx.amount <= amountHi) {
+        found = true;
+        break;
+      }
+    }
+
+    this.closingCache.set(key, found);
+    return found;
   }
 }
 
@@ -341,7 +381,7 @@ function detectLongerCycles(
         if (nxt === root || visited.has(nxt) || !eligible.has(nxt)) continue;
         if (
           atPenultimate &&
-          !g.closingEdges(nxt, root, lastTs, lastAmt, p).length
+          !g.hasClosingEdge(nxt, root, lastTs, lastAmt, p)
         ) {
           continue;
         }
@@ -368,54 +408,68 @@ function detectLongerCycles(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SUBSUMPTION SUPPRESSION
+//
+// Optimised from O(C · 2^n) exponential subset generation to O(C² · n)
+// by iterating directly over (B, A) cycle pairs and checking three O(n)
+// conditions: node-subset, order-subsequence, timestamp-monotonicity.
 // ─────────────────────────────────────────────────────────────────────────────
-
-function combos<T>(arr: T[], k: number): T[][] {
-  if (k === 0) return [[]];
-  if (arr.length < k) return [];
-  const [h, ...t] = arr;
-  return [
-    ...combos(t, k - 1).map((c) => [h, ...c]),
-    ...combos(t, k),
-  ];
-}
-
 function suppressSubsumed(
   all: Map<string, DetectedCycle>,
 ): Map<string, DetectedCycle> {
   const list = [...all.values()];
-  const bySig = new Map<string, DetectedCycle[]>();
-  for (const c of list) {
-    const sig = c.edges
-      .map((e) => e.source)
-      .sort()
-      .join(",");
-    if (!bySig.has(sig)) bySig.set(sig, []);
-    bySig.get(sig)!.push(c);
-  }
+
+  // Sort descending by length so larger cycles (B) come first
+  list.sort((a, b) => b.length - a.length);
 
   const suppressed = new Set<string>();
-  for (const B of list.filter((c) => c.length > 3)) {
-    const nodesB = B.edges.map((e) => e.source);
-    const timesB = new Map(nodesB.map((n, i) => [n, B.edges[i]!.timestamp]));
-    const setB = new Set(nodesB);
 
-    for (let k = 3; k < B.length; k += 1) {
-      for (const subset of combos(nodesB, k)) {
-        const sig = [...subset].sort().join(",");
-        for (const A of bySig.get(sig) ?? []) {
-          if (suppressed.has(A.canonicalKey) || A.length >= B.length) continue;
-          const seqA = A.edges.map((e) => e.source);
-          const subSeqB = nodesB.filter(
-            (n) => setB.has(n) && seqA.includes(n),
-          );
-          if (subSeqB.join(",") !== seqA.join(",")) continue;
-          const times = seqA.map((n) => timesB.get(n) ?? 0);
-          const sortedTimes = [...times].sort((a, b) => a - b);
-          if (times.join(",") !== sortedTimes.join(",")) continue;
-          suppressed.add(A.canonicalKey);
-        }
+  for (let bi = 0; bi < list.length; bi++) {
+    const B = list[bi]!;
+    if (B.length <= 3) break; // sorted desc — no more large cycles
+
+    const nodesB = B.edges.map((e) => e.source);
+    const setB = new Set(nodesB);
+    // Position of each node in B's ordered sequence (for subsequence check)
+    const posInB = new Map(nodesB.map((n, i) => [n, i]));
+    // Timestamp of each node's outgoing edge in B
+    const timesB = new Map(nodesB.map((n, i) => [n, B.edges[i]!.timestamp]));
+
+    for (let ai = bi + 1; ai < list.length; ai++) {
+      const A = list[ai]!;
+      if (suppressed.has(A.canonicalKey) || A.length >= B.length) continue;
+
+      const seqA = A.edges.map((e) => e.source);
+
+      // 1) Node-subset: every node in A must appear in B — O(|A|)
+      let isSubset = true;
+      for (const n of seqA) {
+        if (!setB.has(n)) { isSubset = false; break; }
       }
+      if (!isSubset) continue;
+
+      // 2) Order-subsequence: A's nodes must appear in the same relative
+      //    order within B — O(|A|) via position map
+      let isSubseq = true;
+      let lastPos = -1;
+      for (const n of seqA) {
+        const pos = posInB.get(n)!;
+        if (pos <= lastPos) { isSubseq = false; break; }
+        lastPos = pos;
+      }
+      if (!isSubseq) continue;
+
+      // 3) Timestamp-monotonicity: the timestamps of A's nodes within B
+      //    must be non-decreasing — O(|A|)
+      let isSorted = true;
+      let prevTs = -Infinity;
+      for (const n of seqA) {
+        const ts = timesB.get(n) ?? 0;
+        if (ts < prevTs) { isSorted = false; break; }
+        prevTs = ts;
+      }
+      if (!isSorted) continue;
+
+      suppressed.add(A.canonicalKey);
     }
   }
 

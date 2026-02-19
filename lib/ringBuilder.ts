@@ -14,6 +14,60 @@ const PATTERN_PRIORITY: Record<RingPrototype["pattern_type"], number> = {
   smurfing: 1,
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BFS helper — uses index pointer instead of queue.shift() (O(1) vs O(n)),
+// and iterates adjacency lists directly without allocating intermediate Sets.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function bfsComponent(
+  seeds: Set<string>,
+  start: string,
+  visited: Set<string>,
+  adjacencyOut: Map<string, Set<string>>,
+  adjacencyIn: Map<string, Set<string>>,
+  filterSet?: Set<string>,
+): Set<string> {
+  const queue: string[] = [start];
+  let head = 0;
+  visited.add(start);
+  const component = new Set<string>();
+
+  while (head < queue.length) {
+    const u = queue[head++];
+    component.add(u);
+
+    // Iterate outgoing neighbors directly
+    const out = adjacencyOut.get(u);
+    if (out) {
+      for (const v of out) {
+        if (visited.has(v)) continue;
+        if (!seeds.has(v)) continue;
+        if (filterSet && !filterSet.has(v)) continue;
+        visited.add(v);
+        queue.push(v);
+      }
+    }
+
+    // Iterate incoming neighbors directly
+    const inn = adjacencyIn.get(u);
+    if (inn) {
+      for (const v of inn) {
+        if (visited.has(v)) continue;
+        if (!seeds.has(v)) continue;
+        if (filterSet && !filterSet.has(v)) continue;
+        visited.add(v);
+        queue.push(v);
+      }
+    }
+  }
+
+  return component;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SMURFING RINGS
+// ─────────────────────────────────────────────────────────────────────────────
+
 function buildSmurfingRings(
   graph: GraphData,
   smurfing: SmurfingMetrics,
@@ -26,37 +80,18 @@ function buildSmurfingRings(
 
   const visited = new Set<string>();
   const rings: RingPrototype[] = [];
-
-  const neighborsOf = (id: string): Set<string> => {
-    const neigh = new Set<string>();
-    const out = graph.adjacencyOut.get(id);
-    const inn = graph.adjacencyIn.get(id);
-    if (out) {
-      for (const v of out) neigh.add(v);
-    }
-    if (inn) {
-      for (const v of inn) neigh.add(v);
-    }
-    return neigh;
-  };
-
   const sortedSeeds = [...smurfAccounts].sort();
 
   for (const start of sortedSeeds) {
     if (visited.has(start)) continue;
-    const queue: string[] = [start];
-    const component = new Set<string>();
-    visited.add(start);
 
-    while (queue.length) {
-      const u = queue.shift()!;
-      component.add(u);
-      for (const v of neighborsOf(u)) {
-        if (!smurfAccounts.has(v) || visited.has(v)) continue;
-        visited.add(v);
-        queue.push(v);
-      }
-    }
+    const component = bfsComponent(
+      smurfAccounts,
+      start,
+      visited,
+      graph.adjacencyOut,
+      graph.adjacencyIn,
+    );
 
     if (component.size === 0) continue;
 
@@ -85,6 +120,10 @@ function buildSmurfingRings(
   return rings;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYERED SHELL RINGS
+// ─────────────────────────────────────────────────────────────────────────────
+
 function buildLayeredRings(
   graph: GraphData,
   layeredAccounts: Set<string>,
@@ -93,37 +132,19 @@ function buildLayeredRings(
 
   const visited = new Set<string>();
   const rings: RingPrototype[] = [];
-
-  const neighborsOf = (id: string): Set<string> => {
-    const neigh = new Set<string>();
-    const out = graph.adjacencyOut.get(id);
-    const inn = graph.adjacencyIn.get(id);
-    if (out) {
-      for (const v of out) if (layeredAccounts.has(v)) neigh.add(v);
-    }
-    if (inn) {
-      for (const v of inn) if (layeredAccounts.has(v)) neigh.add(v);
-    }
-    return neigh;
-  };
-
   const sortedSeeds = [...layeredAccounts].sort();
 
   for (const start of sortedSeeds) {
     if (visited.has(start)) continue;
-    const queue: string[] = [start];
-    const component = new Set<string>();
-    visited.add(start);
 
-    while (queue.length) {
-      const u = queue.shift()!;
-      component.add(u);
-      for (const v of neighborsOf(u)) {
-        if (visited.has(v)) continue;
-        visited.add(v);
-        queue.push(v);
-      }
-    }
+    const component = bfsComponent(
+      layeredAccounts,
+      start,
+      visited,
+      graph.adjacencyOut,
+      graph.adjacencyIn,
+      layeredAccounts, // only traverse within layered accounts
+    );
 
     if (component.size < 2) continue;
 
@@ -141,6 +162,10 @@ function buildLayeredRings(
 
   return rings;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC API
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function buildFraudRings(
   graph: GraphData,
@@ -181,25 +206,25 @@ export function buildFraudRings(
     { protoIndex: number; risk: number; patternPriority: number }
   >();
 
-  deduped.forEach((ring, idx) => {
+  for (let idx = 0; idx < deduped.length; idx++) {
+    const ring = deduped[idx]!;
+    const patternPriority = PATTERN_PRIORITY[ring.pattern_type];
     for (const acc of ring.member_accounts) {
       const current = accountChoices.get(acc);
-      const candidate = {
-        protoIndex: idx,
-        risk: ring.risk_score,
-        patternPriority: PATTERN_PRIORITY[ring.pattern_type],
-      };
-      if (!current) {
-        accountChoices.set(acc, candidate);
-      } else if (
-        candidate.risk > current.risk ||
-        (candidate.risk === current.risk &&
-          candidate.patternPriority > current.patternPriority)
+      if (
+        !current ||
+        ring.risk_score > current.risk ||
+        (ring.risk_score === current.risk &&
+          patternPriority > current.patternPriority)
       ) {
-        accountChoices.set(acc, candidate);
+        accountChoices.set(acc, {
+          protoIndex: idx,
+          risk: ring.risk_score,
+          patternPriority,
+        });
       }
     }
-  });
+  }
 
   // Build final member sets per prototype based on chosen assignments
   const finalMembers: string[][] = deduped.map(() => []);
@@ -219,21 +244,26 @@ export function buildFraudRings(
   }
 
   // Deterministic ordering: risk_score desc, then pattern_type, then members
-  finalProtos.sort((a, b) => {
-    if (b.risk_score !== a.risk_score) {
-      return b.risk_score - a.risk_score;
+  // Pre-compute sort keys to avoid repeated string joins in comparator
+  const decorated = finalProtos.map((p) => ({
+    proto: p,
+    key: p.member_accounts.join(","),
+  }));
+  decorated.sort((a, b) => {
+    if (b.proto.risk_score !== a.proto.risk_score) {
+      return b.proto.risk_score - a.proto.risk_score;
     }
-    const pDiff = PATTERN_PRIORITY[b.pattern_type] - PATTERN_PRIORITY[a.pattern_type];
+    const pDiff =
+      PATTERN_PRIORITY[b.proto.pattern_type] -
+      PATTERN_PRIORITY[a.proto.pattern_type];
     if (pDiff !== 0) return pDiff;
-    const aKey = a.member_accounts.join(",");
-    const bKey = b.member_accounts.join(",");
-    return aKey.localeCompare(bKey);
+    return a.key.localeCompare(b.key);
   });
 
   const rings: FraudRing[] = [];
   const ringMembersByAccount = new Map<string, string>();
 
-  finalProtos.forEach((proto, idx) => {
+  decorated.forEach(({ proto }, idx) => {
     const ringId = `RING_${String(idx + 1).padStart(3, "0")}`;
     rings.push({
       ring_id: ringId,
@@ -248,4 +278,3 @@ export function buildFraudRings(
 
   return { rings, ringMembersByAccount };
 }
-

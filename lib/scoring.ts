@@ -23,6 +23,7 @@ export type AccountScoreContext = {
 };
 
 const WINDOW_MS = 72 * 60 * 60 * 1000;
+const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
 
 export function buildAccountContexts(
   graph: GraphData,
@@ -37,67 +38,72 @@ export function buildAccountContexts(
   for (const key of graph.adjacencyOut.keys()) allAccounts.add(key);
   for (const key of graph.adjacencyIn.keys()) allAccounts.add(key);
 
+  // Single pass: build context AND compute velocity in one iteration
   for (const accountId of allAccounts) {
-    const timestamps = graph.timestamps.get(accountId) ?? [];
-    const firstTimestamp = timestamps[0] ?? null;
-    const lastTimestamp = timestamps[timestamps.length - 1] ?? null;
+    const rawTimestamps = graph.timestamps.get(accountId) ?? [];
+    const firstTimestamp = rawTimestamps[0] ?? null;
+    const lastTimestamp = rawTimestamps[rawTimestamps.length - 1] ?? null;
     const inDegree = graph.inDegree.get(accountId) ?? 0;
     const outDegree = graph.outDegree.get(accountId) ?? 0;
     const totalTransactions = graph.transactionCounts.get(accountId) ?? 0;
+    const ringId = ringMembersByAccount.get(accountId);
 
-    const ctx: AccountScoreContext = {
+    const detectedPatterns = new Set<DetectionPattern>();
+    let highVelocity = false;
+
+    // Only compute velocity and patterns for ring members
+    if (ringId) {
+      // High-velocity sliding window with pre-computed numeric timestamps
+      const n = rawTimestamps.length;
+      if (n > 8) {
+        // Pre-compute to avoid repeated Date.getTime() in inner loop
+        const ts = new Float64Array(n);
+        for (let i = 0; i < n; i++) ts[i] = rawTimestamps[i]!.getTime();
+
+        let maxTxInWindow = 0;
+        let start = 0;
+
+        for (let end = 0; end < n; end++) {
+          const windowStart = ts[end] - WINDOW_MS;
+          while (ts[start] < windowStart) start++;
+          const count = end - start + 1;
+          if (count > maxTxInWindow) maxTxInWindow = count;
+        }
+
+        if (maxTxInWindow > 8) {
+          highVelocity = true;
+          detectedPatterns.add("high_velocity");
+        }
+      }
+
+      const cycle = ringCycleLengths.get(accountId) ?? 0;
+      if (cycle === 3) detectedPatterns.add("cycle_length_3");
+      else if (cycle === 4) detectedPatterns.add("cycle_length_4");
+      else if (cycle === 5) detectedPatterns.add("cycle_length_5");
+
+      const smIn = smurfingMetrics.smurfingInCounts.get(accountId) ?? 0;
+      const smOut = smurfingMetrics.smurfingOutCounts.get(accountId) ?? 0;
+      if (smIn >= 10) detectedPatterns.add("smurfing_in");
+      if (smOut >= 10) detectedPatterns.add("smurfing_out");
+
+      if (layeredAccounts.has(accountId)) detectedPatterns.add("layered_shell");
+    }
+
+    contexts.set(accountId, {
       accountId,
       cycleLength: ringCycleLengths.get(accountId) ?? 0,
       smurfingInCount: smurfingMetrics.smurfingInCounts.get(accountId) ?? 0,
       smurfingOutCount: smurfingMetrics.smurfingOutCounts.get(accountId) ?? 0,
       hasLayeredShell: layeredAccounts.has(accountId),
-      highVelocity: false,
+      highVelocity,
       inDegree,
       outDegree,
       totalTransactions,
       firstTimestamp,
       lastTimestamp,
-      detectedPatterns: new Set<DetectionPattern>(),
-      ringId: ringMembersByAccount.get(accountId),
-    };
-
-    contexts.set(accountId, ctx);
-  }
-
-  for (const ctx of contexts.values()) {
-    // Only accounts that belong to at least one fraud ring are considered suspicious
-    if (!ctx.ringId) continue;
-    const { accountId } = ctx;
-    const timestamps = graph.timestamps.get(accountId) ?? [];
-    let maxTxInWindow = 0;
-    let start = 0;
-
-    for (let end = 0; end < timestamps.length; end += 1) {
-      const endTime = timestamps[end]!.getTime();
-      const windowStartTime = endTime - WINDOW_MS;
-      while (start <= end && timestamps[start]!.getTime() < windowStartTime) {
-        start += 1;
-      }
-      const count = end - start + 1;
-      if (count > maxTxInWindow) {
-        maxTxInWindow = count;
-      }
-    }
-
-    if (maxTxInWindow > 8) {
-      ctx.highVelocity = true;
-      ctx.detectedPatterns.add("high_velocity");
-    }
-
-    const cycle = ctx.cycleLength;
-    if (cycle === 3) ctx.detectedPatterns.add("cycle_length_3");
-    if (cycle === 4) ctx.detectedPatterns.add("cycle_length_4");
-    if (cycle === 5) ctx.detectedPatterns.add("cycle_length_5");
-
-    if (ctx.smurfingInCount >= 10) ctx.detectedPatterns.add("smurfing_in");
-    if (ctx.smurfingOutCount >= 10) ctx.detectedPatterns.add("smurfing_out");
-
-    if (ctx.hasLayeredShell) ctx.detectedPatterns.add("layered_shell");
+      detectedPatterns,
+      ringId,
+    });
   }
 
   return contexts;
@@ -116,11 +122,14 @@ export function computeSuspicionScores(
   const suspicious: SuspiciousAccount[] = [];
 
   for (const ctx of contexts.values()) {
+    // Skip accounts with no ring — they can't be suspicious
+    if (!ctx.ringId) continue;
+
     let score = 0;
 
     if (ctx.cycleLength === 3) score += 45;
-    if (ctx.cycleLength === 4) score += 40;
-    if (ctx.cycleLength === 5) score += 35;
+    else if (ctx.cycleLength === 4) score += 40;
+    else if (ctx.cycleLength === 5) score += 35;
 
     const smurfInScore = scoreSmurfing(ctx.smurfingInCount);
     const smurfOutScore = scoreSmurfing(ctx.smurfingOutCount);
@@ -136,14 +145,13 @@ export function computeSuspicionScores(
     }
 
     if (ctx.inDegree > 50 && (ctx.outDegree <= 5)) {
-      score -= 40;  
+      score -= 40;
     }
 
     if (ctx.firstTimestamp && ctx.lastTimestamp) {
       const spanMs =
         ctx.lastTimestamp.getTime() - ctx.firstTimestamp.getTime();
-      const sixMonthsMs = 6 * 30 * 24 * 60 * 60 * 1000;
-      if (spanMs > sixMonthsMs) {
+      if (spanMs > SIX_MONTHS_MS) {
         score -= 20;
       }
     }
@@ -157,7 +165,7 @@ export function computeSuspicionScores(
       account_id: ctx.accountId,
       suspicion_score: Math.round(clamped * 10) / 10,
       detected_patterns: detectedPatterns,
-      ring_id: ctx.ringId!,
+      ring_id: ctx.ringId,
     });
   }
 
@@ -189,4 +197,3 @@ export function buildAnalysisResultSummary(
     },
   };
 }
-

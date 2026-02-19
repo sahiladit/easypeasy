@@ -5,7 +5,7 @@
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import type { AnalyzeApiResponse } from "@/types";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type GraphViewProps = {
   result: AnalyzeApiResponse;
@@ -32,6 +32,9 @@ export function GraphView({ result }: GraphViewProps) {
     x: number;
     y: number;
   } | null>(null);
+
+  // Track the cytoscape instance to avoid re-binding
+  const cyRef = useRef<cytoscape.Core | null>(null);
 
   useEffect(() => {
     setIsClient(true);
@@ -118,6 +121,29 @@ export function GraphView({ result }: GraphViewProps) {
     [],
   );
 
+  // Memoize the cy callback to avoid re-binding event handlers on every render
+  const handleCy = useCallback((cyInstance: cytoscape.Core) => {
+    if (cyRef.current === cyInstance) return;
+    cyRef.current = cyInstance;
+
+    cyInstance.on("tap", "node", (evt) => {
+      const data = evt.target.data();
+      const pos = evt.target.renderedPosition();
+      setActiveNode({
+        id: data.id as string,
+        suspicion_score: data.suspicion_score as number,
+        patterns: (data.patterns as string) ?? "",
+        ring_id: (data.ring_id as string) ?? "",
+        x: pos.x,
+        y: pos.y,
+      });
+    });
+
+    cyInstance.on("tapBackground", () => {
+      setActiveNode(null);
+    });
+  }, []);
+
   return (
     <div className="relative h-[520px] w-full rounded-lg border border-zinc-200 bg-white p-2 shadow-sm">
       {isClient ? (
@@ -126,26 +152,7 @@ export function GraphView({ result }: GraphViewProps) {
           layout={{ name: "cose", animate: false }}
           stylesheet={stylesheet}
           style={{ width: "100%", height: "100%" }}
-          cy={(cyInstance: cytoscape.Core) => {
-            cyInstance.off("tap");
-            cyInstance.on("tap", "node", (evt) => {
-              const data = evt.target.data();
-              const pos = evt.target.renderedPosition();
-              setActiveNode({
-                id: data.id as string,
-                suspicion_score: data.suspicion_score as number,
-                patterns: (data.patterns as string) ?? "",
-                ring_id: (data.ring_id as string) ?? "",
-                x: pos.x,
-                y: pos.y,
-              });
-            });
-
-            cyInstance.off("tapBackground");
-            cyInstance.on("tapBackground", () => {
-              setActiveNode(null);
-            });
-          }}
+          cy={handleCy}
         />
       ) : (
         <div className="flex h-full w-full items-center justify-center text-xs text-zinc-400">
@@ -184,4 +191,3 @@ export function GraphView({ result }: GraphViewProps) {
     </div>
   );
 }
-

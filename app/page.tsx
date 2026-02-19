@@ -1,20 +1,56 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import { useDeferredValue, useMemo, useState } from "react";
 import type { AnalyzeApiResponse } from "@/types";
 import { UploadForm } from "@/components/UploadForm";
-import { GraphView } from "@/components/GraphView";
 import { RingTable } from "@/components/RingTable";
 import { SummaryPanel } from "@/components/SummaryPanel";
+
+// Lazy-load GraphView so summary + table appear immediately
+const GraphView = dynamic(
+  () => import("@/components/GraphView").then((m) => ({ default: m.GraphView })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-[480px] items-center justify-center rounded-lg border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">
+        <svg
+          className="mr-2 h-5 w-5 animate-spin text-zinc-400"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+          />
+        </svg>
+        Loading graph…
+      </div>
+    ),
+  },
+);
 
 export default function Home() {
   const [result, setResult] = useState<AnalyzeApiResponse | null>(null);
   const [error, setError] = useState<string>("");
 
+  // Defer heavy JSON stringification so it doesn't block initial rendering
+  const deferredResult = useDeferredValue(result);
+
   const downloadableJson = useMemo(() => {
-    if (!result) return null;
-    return JSON.stringify(result.analysis, null, 2);
-  }, [result]);
+    if (!deferredResult) return null;
+    return JSON.stringify(deferredResult.analysis, null, 2);
+  }, [deferredResult]);
 
   const handleDownloadJson = () => {
     if (!downloadableJson) return;
@@ -105,4 +141,3 @@ export default function Home() {
     </div>
   );
 }
-

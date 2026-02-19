@@ -8,9 +8,20 @@ type UploadFormProps = {
   onError: (message: string) => void;
 };
 
+type ProgressStage = "idle" | "uploading" | "analyzing" | "loading";
+
+const STAGE_LABELS: Record<ProgressStage, string> = {
+  idle: "Run Analysis",
+  uploading: "Uploading CSV…",
+  analyzing: "Running analysis…",
+  loading: "Loading results…",
+};
+
 export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [stage, setStage] = useState<ProgressStage>("idle");
+
+  const isSubmitting = stage !== "idle";
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -19,11 +30,13 @@ export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
       return;
     }
 
-    setIsSubmitting(true);
     onError("");
 
     try {
+      setStage("uploading");
       const text = await file.text();
+
+      setStage("analyzing");
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {
@@ -42,6 +55,7 @@ export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
         return;
       }
 
+      setStage("loading");
       const data = (await response.json()) as AnalyzeApiResponse;
       onAnalysisComplete(data);
     } catch (error) {
@@ -49,7 +63,7 @@ export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
         error instanceof Error ? error.message : "Unexpected upload error.";
       onError(message);
     } finally {
-      setIsSubmitting(false);
+      setStage("idle");
     }
   };
 
@@ -88,9 +102,30 @@ export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
         disabled={isSubmitting}
         className="inline-flex items-center justify-center rounded-md bg-zinc-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
       >
-        {isSubmitting ? "Analyzing..." : "Run Analysis"}
+        {isSubmitting && (
+          <svg
+            className="mr-2 h-4 w-4 animate-spin"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+        )}
+        {STAGE_LABELS[stage]}
       </button>
     </form>
   );
 }
-
