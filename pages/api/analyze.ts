@@ -9,9 +9,9 @@ import {
   type Transaction,
 } from "@/types";
 import { buildGraph } from "@/lib/graphBuilder";
-import { tarjanScc, extractFraudRingsFromScc } from "@/lib/sccDetection";
 import { detectSmurfing } from "@/lib/smurfingDetection";
 import { detectLayeredShellAccounts } from "@/lib/layeredDetection";
+import { buildFraudRings } from "@/lib/ringBuilder";
 import {
   buildAccountContexts,
   computeSuspicionScores,
@@ -141,7 +141,7 @@ function buildGraphElements(
       id: accountId,
       suspicion_score: suspicionScore,
       detected_patterns: detectedPatterns,
-      ring_id: suspiciousEntry?.ring_id,
+      ring_id: suspiciousEntry?.ring_id ?? "",
     });
   }
 
@@ -183,12 +183,18 @@ export default function handler(
     const transactions = validateAndParseCsv(csv);
 
     const graph = buildGraph(transactions);
-    const scc = tarjanScc(graph);
-    const { rings: fraudRings, ringMembersByAccount } =
-      extractFraudRingsFromScc(scc);
+    const smurfingMetrics = detectSmurfing(graph);
+    const layeredAccounts = detectLayeredShellAccounts(graph);
+
+    const { rings: fraudRings, ringMembersByAccount } = buildFraudRings(
+      graph,
+      smurfingMetrics,
+      layeredAccounts,
+    );
 
     const ringCycleLengths = new Map<string, 3 | 4 | 5>();
     for (const ring of fraudRings) {
+      if (ring.pattern_type !== "cycle") continue;
       const length = ring.member_accounts.length as 3 | 4 | 5;
       for (const acc of ring.member_accounts) {
         const current = ringCycleLengths.get(acc);
@@ -197,9 +203,6 @@ export default function handler(
         }
       }
     }
-
-    const smurfingMetrics = detectSmurfing(graph);
-    const layeredAccounts = detectLayeredShellAccounts(graph);
 
     const accountContexts = buildAccountContexts(
       graph,

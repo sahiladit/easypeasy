@@ -52,6 +52,13 @@ export type AccountTimeSeries = {
   outbound: AccountTimeSeriesEntry[];
 };
 
+export type GraphEdgeWithMeta = {
+  source: string;
+  target: string;
+  amount: number;
+  timestamp: Date;
+};
+
 export type GraphData = {
   adjacencyOut: GraphAdjacency;
   adjacencyIn: GraphAdjacency;
@@ -60,13 +67,14 @@ export type GraphData = {
   transactionCounts: Map<string, number>;
   timestamps: Map<string, Date[]>;
   timeSeries: Map<string, AccountTimeSeries>;
+  edges: GraphEdgeWithMeta[];
 };
 
 export type SuspiciousAccount = {
   account_id: string;
   suspicion_score: number;
   detected_patterns: DetectionPattern[];
-  ring_id?: string;
+  ring_id: string;
 };
 
 export type FraudRing = {

@@ -65,6 +65,8 @@ export function buildAccountContexts(
   }
 
   for (const ctx of contexts.values()) {
+    // Only accounts that belong to at least one fraud ring are considered suspicious
+    if (!ctx.ringId) continue;
     const { accountId } = ctx;
     const timestamps = graph.timestamps.get(accountId) ?? [];
     let maxTxInWindow = 0;
@@ -133,8 +135,8 @@ export function computeSuspicionScores(
       score += 20;
     }
 
-    if (ctx.inDegree > 50 && ctx.outDegree === 0) {
-      score -= 40;
+    if (ctx.inDegree > 50 && (ctx.outDegree <= 5)) {
+      score -= 40;  
     }
 
     if (ctx.firstTimestamp && ctx.lastTimestamp) {
@@ -155,7 +157,7 @@ export function computeSuspicionScores(
       account_id: ctx.accountId,
       suspicion_score: Math.round(clamped * 10) / 10,
       detected_patterns: detectedPatterns,
-      ring_id: ctx.ringId,
+      ring_id: ctx.ringId!,
     });
   }
 

@@ -1,6 +1,9 @@
 "use client";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-expect-error no types published for this package
 import CytoscapeComponent from "react-cytoscapejs";
+import type cytoscape from "cytoscape";
 import type { AnalyzeApiResponse } from "@/types";
 import { useEffect, useMemo, useState } from "react";
 
@@ -21,6 +24,14 @@ const RING_COLORS = [
 
 export function GraphView({ result }: GraphViewProps) {
   const [isClient, setIsClient] = useState(false);
+  const [activeNode, setActiveNode] = useState<{
+    id: string;
+    suspicion_score: number;
+    patterns: string;
+    ring_id: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   useEffect(() => {
     setIsClient(true);
@@ -108,17 +119,66 @@ export function GraphView({ result }: GraphViewProps) {
   );
 
   return (
-    <div className="h-[480px] w-full rounded-lg border border-zinc-200 bg-white p-2 shadow-sm">
+    <div className="relative h-[520px] w-full rounded-lg border border-zinc-200 bg-white p-2 shadow-sm">
       {isClient ? (
         <CytoscapeComponent
           elements={elements}
           layout={{ name: "cose", animate: false }}
           stylesheet={stylesheet}
           style={{ width: "100%", height: "100%" }}
+          cy={(cyInstance: cytoscape.Core) => {
+            cyInstance.off("tap");
+            cyInstance.on("tap", "node", (evt) => {
+              const data = evt.target.data();
+              const pos = evt.target.renderedPosition();
+              setActiveNode({
+                id: data.id as string,
+                suspicion_score: data.suspicion_score as number,
+                patterns: (data.patterns as string) ?? "",
+                ring_id: (data.ring_id as string) ?? "",
+                x: pos.x,
+                y: pos.y,
+              });
+            });
+
+            cyInstance.off("tapBackground");
+            cyInstance.on("tapBackground", () => {
+              setActiveNode(null);
+            });
+          }}
         />
       ) : (
         <div className="flex h-full w-full items-center justify-center text-xs text-zinc-400">
           Preparing graph…
+        </div>
+      )}
+
+      {activeNode && (
+        <div
+          className="pointer-events-none absolute max-w-xs rounded-md bg-black/75 px-2 py-1 text-[11px] text-zinc-100 shadow-md transition duration-150 ease-out hover:-translate-y-0.5 hover:opacity-100"
+          style={{
+            left: activeNode.x + 16,
+            top: activeNode.y + 12,
+          }}
+        >
+          <div className="space-y-0.5">
+            <div>
+              <span className="font-semibold">Account:</span>{" "}
+              <span className="font-mono">{activeNode.id}</span>
+            </div>
+            <div>
+              <span className="font-semibold">Score:</span>{" "}
+              {activeNode.suspicion_score.toFixed(1)}
+            </div>
+            <div>
+              <span className="font-semibold">Ring:</span>{" "}
+              {activeNode.ring_id || "—"}
+            </div>
+            <div>
+              <span className="font-semibold">Patterns:</span>{" "}
+              {activeNode.patterns || "None"}
+            </div>
+          </div>
         </div>
       )}
     </div>

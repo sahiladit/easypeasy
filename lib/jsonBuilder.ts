@@ -17,9 +17,12 @@ export function buildJsonResult(
     return a.account_id.localeCompare(b.account_id);
   });
 
-  const sortedRings = [...fraudRings].sort((a, b) =>
-    a.ring_id.localeCompare(b.ring_id),
-  );
+  const sortedRings = [...fraudRings].sort((a, b) => {
+    if (b.risk_score !== a.risk_score) {
+      return b.risk_score - a.risk_score;
+    }
+    return a.ring_id.localeCompare(b.ring_id);
+  });
 
   return {
     suspicious_accounts: sortedSuspicious,

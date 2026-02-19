@@ -1,4 +1,9 @@
-import type { GraphData, Transaction, AccountTimeSeries } from "@/types";
+import type {
+  GraphData,
+  Transaction,
+  AccountTimeSeries,
+  GraphEdgeWithMeta,
+} from "@/types";
 
 export function buildGraph(transactions: Transaction[]): GraphData {
   const adjacencyOut = new Map<string, Set<string>>();
@@ -8,6 +13,7 @@ export function buildGraph(transactions: Transaction[]): GraphData {
   const transactionCounts = new Map<string, number>();
   const timestamps = new Map<string, Date[]>();
   const timeSeries = new Map<string, AccountTimeSeries>();
+   const edges: GraphEdgeWithMeta[] = [];
 
   const ensureAccount = (accountId: string) => {
     if (!adjacencyOut.has(accountId)) adjacencyOut.set(accountId, new Set());
@@ -22,7 +28,7 @@ export function buildGraph(transactions: Transaction[]): GraphData {
   };
 
   for (const tx of transactions) {
-    const { senderId, receiverId, timestamp } = tx;
+    const { senderId, receiverId, timestamp, amount } = tx;
 
     ensureAccount(senderId);
     ensureAccount(receiverId);
@@ -50,6 +56,13 @@ export function buildGraph(transactions: Transaction[]): GraphData {
       counterpartyId: receiverId,
       timestamp,
     });
+
+    edges.push({
+      source: senderId,
+      target: receiverId,
+      amount,
+      timestamp,
+    });
   }
 
   for (const [, series] of timeSeries) {
@@ -69,6 +82,7 @@ export function buildGraph(transactions: Transaction[]): GraphData {
     transactionCounts,
     timestamps,
     timeSeries,
+    edges,
   };
 }
 
