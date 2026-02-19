@@ -11,22 +11,27 @@ type GraphViewProps = {
   result: AnalyzeApiResponse;
 };
 
-const RING_COLORS = [
-  "#1d4ed8",
-  "#16a34a",
-  "#ea580c",
-  "#7c3aed",
-  "#db2777",
-  "#0f766e",
-  "#b91c1c",
-  "#4b5563",
-];
+/** Risk score → color mapping. Node color derived only from score range. */
+const RISK_LEVELS = [
+  { min: 0, max: 20, label: "Normal / Very Low", color: "#86efac" },
+  { min: 20, max: 40, label: "Low", color: "#eab308" },
+  { min: 40, max: 60, label: "Moderate", color: "#f97316" },
+  { min: 60, max: 80, label: "High", color: "#ef4444" },
+  { min: 80, max: 101, label: "Severe", color: "#000000" },
+] as const;
+
+function getRiskColor(score: number): string {
+  const level = RISK_LEVELS.find((r) => score >= r.min && score < r.max);
+  return level?.color ?? RISK_LEVELS[0]!.color;
+}
 
 export function GraphView({ result }: GraphViewProps) {
   const [isClient, setIsClient] = useState(false);
   const [activeNode, setActiveNode] = useState<{
     id: string;
+    displayId: string;
     suspicion_score: number;
+    riskLabel: string;
     patterns: string;
     ring_id: string;
     x: number;
@@ -38,41 +43,36 @@ export function GraphView({ result }: GraphViewProps) {
   }, []);
 
   const elements = useMemo(() => {
-    const ringColorMap = new Map<string, string>();
-    let ringIndex = 0;
-    for (const ring of result.analysis.fraud_rings) {
-      if (!ringColorMap.has(ring.ring_id)) {
-        const color =
-          RING_COLORS[ringIndex % RING_COLORS.length] ?? "#1d4ed8";
-        ringColorMap.set(ring.ring_id, color);
-        ringIndex += 1;
-      }
-    }
-
     const nodes = result.graphNodes.map((node) => {
-      const baseColor = "#3b82f6";
-      const ringColor = node.ring_id
-        ? ringColorMap.get(node.ring_id) ?? baseColor
-        : baseColor;
-      const isSuspicious = node.suspicion_score > 0;
+      const score = node.suspicion_score;
+      const color = getRiskColor(score);
+      const isSuspicious = score > 0;
+      const displayId = node.id.replace(/^ACC_/, "");
+      const riskLabel =
+        RISK_LEVELS.find((r) => score >= r.min && score < r.max)?.label ??
+        RISK_LEVELS[0]!.label;
 
       return {
         data: {
           id: node.id,
-          label: node.id,
-          suspicion_score: node.suspicion_score,
+          label: displayId,
+          displayId,
+          suspicion_score: score,
+          riskLabel,
           patterns: node.detected_patterns.join(", "),
           ring_id: node.ring_id ?? "",
         },
         style: {
-          "background-color": ringColor,
-          "border-width": isSuspicious ? 4 : 1,
-          "border-color": isSuspicious ? "#dc2626" : "#1e293b",
-          "label": node.id,
-          "font-size": 8,
+          "background-color": color,
+          "border-width": 0,
+          "border-opacity": 0,
+          "label": displayId,
+          "font-size": isSuspicious ? 10 : 8,
           "text-valign": "center",
           "text-halign": "center",
-          "color": "#f9fafb",
+          "color": score >= 80 ? "#ffffff" : "#171717",
+          width: isSuspicious ? 32 : 20,
+          height: isSuspicious ? 32 : 20,
         },
       };
     });
@@ -93,8 +93,10 @@ export function GraphView({ result }: GraphViewProps) {
       {
         selector: "node",
         style: {
-          "width": 24,
-          "height": 24,
+          width: 20,
+          height: 20,
+          "border-width": 0,
+          "border-opacity": 0,
         },
       },
       {
@@ -127,13 +129,15 @@ export function GraphView({ result }: GraphViewProps) {
           stylesheet={stylesheet}
           style={{ width: "100%", height: "100%" }}
           cy={(cyInstance: cytoscape.Core) => {
-            cyInstance.off("tap");
-            cyInstance.on("tap", "node", (evt) => {
+            cyInstance.off("mouseover");
+            cyInstance.on("mouseover", "node", (evt) => {
               const data = evt.target.data();
               const pos = evt.target.renderedPosition();
               setActiveNode({
                 id: data.id as string,
+                displayId: (data.displayId as string) ?? data.id,
                 suspicion_score: data.suspicion_score as number,
+                riskLabel: (data.riskLabel as string) ?? "",
                 patterns: (data.patterns as string) ?? "",
                 ring_id: (data.ring_id as string) ?? "",
                 x: pos.x,
@@ -141,8 +145,8 @@ export function GraphView({ result }: GraphViewProps) {
               });
             });
 
-            cyInstance.off("tapBackground");
-            cyInstance.on("tapBackground", () => {
+            cyInstance.off("mouseout");
+            cyInstance.on("mouseout", "node", () => {
               setActiveNode(null);
             });
           }}
@@ -155,20 +159,24 @@ export function GraphView({ result }: GraphViewProps) {
 
       {activeNode && (
         <div
-          className="pointer-events-none absolute max-w-xs rounded-md bg-black/75 px-2 py-1 text-[11px] text-zinc-100 shadow-md transition duration-150 ease-out hover:-translate-y-0.5 hover:opacity-100"
+          className="pointer-events-none absolute z-10 max-w-xs rounded-md bg-black/90 px-2 py-1.5 text-[11px] text-zinc-100 shadow-lg"
           style={{
-            left: activeNode.x + 16,
-            top: activeNode.y + 12,
+            left: Math.min(activeNode.x + 20, 400),
+            top: activeNode.y + 20,
           }}
         >
           <div className="space-y-0.5">
             <div>
               <span className="font-semibold">Account:</span>{" "}
-              <span className="font-mono">{activeNode.id}</span>
+              <span className="font-mono">{activeNode.displayId}</span>
             </div>
             <div>
               <span className="font-semibold">Score:</span>{" "}
               {activeNode.suspicion_score.toFixed(1)}
+            </div>
+            <div>
+              <span className="font-semibold">Status:</span>{" "}
+              {activeNode.riskLabel}
             </div>
             <div>
               <span className="font-semibold">Ring:</span>{" "}
@@ -181,6 +189,24 @@ export function GraphView({ result }: GraphViewProps) {
           </div>
         </div>
       )}
+
+      <div className="pointer-events-none absolute right-2 top-2 rounded-md border border-zinc-200 bg-white/95 px-2.5 py-1.5 text-[10px] text-zinc-700 shadow-sm">
+        <div className="mb-1.5 font-semibold text-zinc-900">Risk legend</div>
+        <div className="space-y-1">
+          {RISK_LEVELS.map((r) => (
+            <div key={r.label} className="flex items-center gap-2">
+              <span
+                className="h-3 w-3 shrink-0 rounded-sm border border-zinc-300"
+                style={{ backgroundColor: r.color }}
+              />
+              <span className="min-w-0 flex-1">{r.label}</span>
+              <span className="shrink-0 font-mono text-[9px]">
+                {r.min}–{r.max === 101 ? 100 : r.max}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

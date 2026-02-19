@@ -80,7 +80,7 @@ export type SuspiciousAccount = {
 export type FraudRing = {
   ring_id: string;
   member_accounts: string[];
-  pattern_type: "cycle";
+  pattern_type: "cycle" | "smurfing" | "layered_shell";
   risk_score: number;
 };
 

@@ -1,14 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import type { AnalyzeApiResponse } from "@/types";
+import type { AnalyzeApiResponse, Transaction } from "@/types";
+import { parseCsvToTransactions } from "@/lib/csvParse";
 
 type UploadFormProps = {
   onAnalysisComplete: (result: AnalyzeApiResponse) => void;
   onError: (message: string) => void;
+  onTransactionsParsed?: (transactions: Transaction[]) => void;
 };
 
-export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
+export function UploadForm({
+  onAnalysisComplete,
+  onError,
+  onTransactionsParsed,
+}: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -24,6 +30,11 @@ export function UploadForm({ onAnalysisComplete, onError }: UploadFormProps) {
 
     try {
       const text = await file.text();
+      const transactions = parseCsvToTransactions(text);
+      if (transactions.length > 0) {
+        onTransactionsParsed?.(transactions);
+      }
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {
