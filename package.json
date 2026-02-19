@@ -11,6 +11,7 @@
   "dependencies": {
     "again": "^0.0.1",
     "cytoscape": "^3.33.1",
+    "next": "^16.1.6",
     "papaparse": "^5.5.3",
     "react": "19.2.3",
     "react-cytoscapejs": "^2.0.0",
@@ -19,7 +20,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "20.19.33",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
