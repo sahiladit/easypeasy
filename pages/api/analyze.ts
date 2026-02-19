@@ -23,29 +23,101 @@ const EXPECTED_HEADER =
   "transaction_id,sender_id,receiver_id,amount,timestamp";
 
 function parseTimestampStrict(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(
-    value.trim(),
-  );
-  if (!match) return null;
-  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match;
-  const year = Number(yearStr);
-  const month = Number(monthStr);
-  const day = Number(dayStr);
-  const hour = Number(hourStr);
-  const minute = Number(minuteStr);
-  const second = Number(secondStr);
-  if (
-    Number.isNaN(year) ||
-    Number.isNaN(month) ||
-    Number.isNaN(day) ||
-    Number.isNaN(hour) ||
-    Number.isNaN(minute) ||
-    Number.isNaN(second)
-  ) {
-    return null;
+  const trimmed = value.trim();
+
+  // Format 1: YYYY-MM-DD HH:MM:SS (e.g., 2024-01-21 03:01:00)
+  const match1 = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(trimmed);
+  if (match1) {
+    const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match1;
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    const hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    const second = Number(secondStr);
+    if (
+      Number.isNaN(year) ||
+      Number.isNaN(month) ||
+      Number.isNaN(day) ||
+      Number.isNaN(hour) ||
+      Number.isNaN(minute) ||
+      Number.isNaN(second)
+    ) {
+      return null;
+    }
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+    return new Date(ms);
   }
-  const ms = Date.UTC(year, month - 1, day, hour, minute, second);
-  return new Date(ms);
+
+  // Format 2: YYYY-MM-DD HH:MM (e.g., 2024-01-21 03:01) — no seconds
+  const match2 = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(trimmed);
+  if (match2) {
+    const [, yearStr, monthStr, dayStr, hourStr, minuteStr] = match2;
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    const hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    if (
+      Number.isNaN(year) ||
+      Number.isNaN(month) ||
+      Number.isNaN(day) ||
+      Number.isNaN(hour) ||
+      Number.isNaN(minute)
+    ) {
+      return null;
+    }
+    const ms = Date.UTC(year, month - 1, day, hour, minute, 0);
+    return new Date(ms);
+  }
+
+  // Format 3: DD-MM-YYYY HH:MM:SS (e.g., 21-01-2024 03:01:00)
+  const match3 = /^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2}):(\d{2})$/.exec(trimmed);
+  if (match3) {
+    const [, dayStr, monthStr, yearStr, hourStr, minuteStr, secondStr] = match3;
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    const hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    const second = Number(secondStr);
+    if (
+      Number.isNaN(year) ||
+      Number.isNaN(month) ||
+      Number.isNaN(day) ||
+      Number.isNaN(hour) ||
+      Number.isNaN(minute) ||
+      Number.isNaN(second)
+    ) {
+      return null;
+    }
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+    return new Date(ms);
+  }
+
+  // Format 4: DD-MM-YYYY HH:MM (e.g., 21-01-2024 03:01) — no seconds
+  const match4 = /^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})$/.exec(trimmed);
+  if (match4) {
+    const [, dayStr, monthStr, yearStr, hourStr, minuteStr] = match4;
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    const hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    if (
+      Number.isNaN(year) ||
+      Number.isNaN(month) ||
+      Number.isNaN(day) ||
+      Number.isNaN(hour) ||
+      Number.isNaN(minute)
+    ) {
+      return null;
+    }
+    const ms = Date.UTC(year, month - 1, day, hour, minute, 0);
+    return new Date(ms);
+  }
+
+  return null;
 }
 
 function validateAndParseCsv(csv: string): Transaction[] {
@@ -78,7 +150,10 @@ function validateAndParseCsv(csv: string): Transaction[] {
 
   const transactions: Transaction[] = [];
 
-  for (const row of parsed.data) {
+  for (let i = 0; i < parsed.data.length; i++) {
+    const row = parsed.data[i];
+    const rowNumber = i + 2; // +2 because row 1 is header, and arrays are 0-indexed
+
     if (
       row.transaction_id == null ||
       row.sender_id == null ||
@@ -86,7 +161,9 @@ function validateAndParseCsv(csv: string): Transaction[] {
       row.amount == null ||
       row.timestamp == null
     ) {
-      throw new Error("CSV row contains missing values.");
+      throw new Error(
+        `CSV row ${rowNumber} contains missing values. Expected columns: transaction_id, sender_id, receiver_id, amount, timestamp`,
+      );
     }
 
     const transactionId = String(row.transaction_id).trim();
@@ -96,17 +173,21 @@ function validateAndParseCsv(csv: string): Transaction[] {
     const timestampRaw = String(row.timestamp).trim();
 
     if (!transactionId || !senderId || !receiverId || !amountRaw || !timestampRaw) {
-      throw new Error("CSV row contains empty values.");
+      throw new Error(`CSV row ${rowNumber} contains empty values.`);
     }
 
     const amount = Number.parseFloat(amountRaw);
     if (!Number.isFinite(amount) || amount <= 0) {
-      throw new Error("Invalid transaction amount.");
+      throw new Error(
+        `CSV row ${rowNumber}: Invalid transaction amount "${amountRaw}". Amount must be a positive number.`,
+      );
     }
 
     const timestamp = parseTimestampStrict(timestampRaw);
     if (!timestamp) {
-      throw new Error("Invalid timestamp format.");
+      throw new Error(
+        `CSV row ${rowNumber}: Invalid timestamp format "${timestampRaw}". Supported formats: "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD HH:MM", "DD-MM-YYYY HH:MM:SS", "DD-MM-YYYY HH:MM".`,
+      );
     }
 
     transactions.push({
@@ -212,7 +293,11 @@ export default function handler(
       layeredAccounts,
     );
 
-    const suspiciousAccounts = computeSuspicionScores(accountContexts);
+    const suspiciousAccounts = computeSuspicionScores(
+      accountContexts,
+      graph,
+      layeredAccounts,
+    );
     const totalAccountsAnalyzed = accountContexts.size;
 
     const finishedAt = process.hrtime.bigint();
@@ -245,4 +330,3 @@ export default function handler(
     res.status(400).json({ error: message });
   }
 }
-
