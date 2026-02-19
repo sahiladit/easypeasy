@@ -77,12 +77,13 @@ export type SuspiciousAccount = {
   ring_id: string;
 };
 
-export type FraudRing = {
+// @/types.ts (or wherever FraudRing is defined)
+export interface FraudRing {
   ring_id: string;
   member_accounts: string[];
-  pattern_type: "cycle";
+  pattern_type: "cycle" | "layered_shell" | "smurfing";
   risk_score: number;
-};
+}
 
 export type AnalysisSummary = {
   total_accounts_analyzed: number;
