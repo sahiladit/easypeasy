@@ -5,6 +5,7 @@ import {
   type AnalysisResult,
   type GraphEdgeInfo,
   type GraphNodeInfo,
+  type ProcessingStepTiming,
   type RawCsvRow,
   type Transaction,
 } from "@/types";
@@ -13,10 +14,9 @@ import { detectSmurfing } from "@/lib/smurfingDetection";
 import { detectLayeredShellAccounts } from "@/lib/layeredDetection";
 import { buildFraudRings } from "@/lib/ringBuilder";
 import {
-  buildAccountContexts,
-  computeSuspicionScores,
-  type AccountScoreContext,
-} from "@/lib/scoring";
+  computeAllBayesianScores,
+  computeBayesianScores,
+} from "@/lib/bayesianScoring";
 import { buildJsonResult } from "@/lib/jsonBuilder";
 
 const EXPECTED_HEADER =
@@ -122,26 +122,17 @@ function validateAndParseCsv(csv: string): Transaction[] {
 }
 
 function buildGraphElements(
-  analysis: AnalysisResult,
+  allScores: Map<string, { score: number; patterns: string[] }>,
   transactions: Transaction[],
-  accountContexts: Map<string, AccountScoreContext>,
+  ringMembersByAccount: Map<string, string>,
 ): { nodes: GraphNodeInfo[]; edges: GraphEdgeInfo[] } {
   const nodes: GraphNodeInfo[] = [];
-
-  for (const [accountId, ctx] of accountContexts) {
-    const suspiciousEntry = analysis.suspicious_accounts.find(
-      (acc) => acc.account_id === accountId,
-    );
-    const suspicionScore = suspiciousEntry?.suspicion_score ?? 0;
-    const detectedPatterns = suspiciousEntry
-      ? suspiciousEntry.detected_patterns
-      : Array.from(ctx.detectedPatterns.values()).sort();
-
+  for (const [accountId, { score, patterns }] of allScores) {
     nodes.push({
       id: accountId,
-      suspicion_score: suspicionScore,
-      detected_patterns: detectedPatterns,
-      ring_id: suspiciousEntry?.ring_id ?? "",
+      suspicion_score: score,
+      detected_patterns: patterns as import("@/types").DetectionPattern[],
+      ring_id: ringMembersByAccount.get(accountId) ?? "",
     });
   }
 
@@ -171,6 +162,19 @@ export default function handler(
   }
 
   const startedAt = process.hrtime.bigint();
+  const stepTimings: { step: string; time_ms: number }[] = [];
+
+  function elapsedMs(): number {
+    return Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  }
+
+  function recordStep(step: string, start: bigint) {
+    const end = process.hrtime.bigint();
+    stepTimings.push({
+      step,
+      time_ms: Number(end - start) / 1_000_000,
+    });
+  }
 
   try {
     const { csv } = (req.body ?? {}) as { csv?: string };
@@ -180,56 +184,72 @@ export default function handler(
       return;
     }
 
+    let t0 = process.hrtime.bigint();
     const transactions = validateAndParseCsv(csv);
+    recordStep("Data loading / preprocessing", t0);
 
+    t0 = process.hrtime.bigint();
     const graph = buildGraph(transactions);
-    const smurfingMetrics = detectSmurfing(graph);
-    const layeredAccounts = detectLayeredShellAccounts(graph);
+    recordStep("Graph construction", t0);
 
+    t0 = process.hrtime.bigint();
+    const smurfingMetrics = detectSmurfing(graph);
+    recordStep("Fan-in / Fan-out (smurfing)", t0);
+
+    t0 = process.hrtime.bigint();
+    const layeredAccounts = detectLayeredShellAccounts(graph);
+    recordStep("Shell layer algorithm", t0);
+
+    t0 = process.hrtime.bigint();
     const { rings: fraudRings, ringMembersByAccount } = buildFraudRings(
       graph,
       smurfingMetrics,
       layeredAccounts,
     );
+    recordStep("Cycle detection & fraud ring aggregation", t0);
 
-    const ringCycleLengths = new Map<string, 3 | 4 | 5>();
-    for (const ring of fraudRings) {
-      if (ring.pattern_type !== "cycle") continue;
-      const length = ring.member_accounts.length as 3 | 4 | 5;
-      for (const acc of ring.member_accounts) {
-        const current = ringCycleLengths.get(acc);
-        if (!current || length < current) {
-          ringCycleLengths.set(acc, length);
-        }
-      }
-    }
-
-    const accountContexts = buildAccountContexts(
+    t0 = process.hrtime.bigint();
+    const suspiciousAccounts = computeBayesianScores(
       graph,
-      ringCycleLengths,
+      transactions,
+      fraudRings,
       ringMembersByAccount,
-      smurfingMetrics,
       layeredAccounts,
     );
+    const allScoresMap = computeAllBayesianScores(
+      graph,
+      transactions,
+      fraudRings,
+      ringMembersByAccount,
+      layeredAccounts,
+    );
+    const allScores = new Map<string, { score: number; patterns: string[] }>();
+    for (const [id, { score, patterns }] of allScoresMap) {
+      allScores.set(id, { score, patterns: patterns as string[] });
+    }
+    const totalAccountsAnalyzed = allScores.size;
+    recordStep("Bayesian scoring / aggregation", t0);
 
-    const suspiciousAccounts = computeSuspicionScores(accountContexts);
-    const totalAccountsAnalyzed = accountContexts.size;
-
-    const finishedAt = process.hrtime.bigint();
-    const elapsedNs = Number(finishedAt - startedAt);
-    const processingTimeSeconds = elapsedNs / 1_000_000_000;
+    const totalMs = elapsedMs();
+    const processingTimeSeconds = totalMs / 1000;
+    const breakdown: ProcessingStepTiming[] = stepTimings.map((s) => ({
+      step: s.step,
+      time_ms: Math.round(s.time_ms * 100) / 100,
+      pct: totalMs > 0 ? Math.round((s.time_ms / totalMs) * 1000) / 10 : 0,
+    }));
 
     const analysis: AnalysisResult = buildJsonResult(
       suspiciousAccounts,
       fraudRings,
       totalAccountsAnalyzed,
       processingTimeSeconds,
+      breakdown,
     );
 
     const { nodes, edges } = buildGraphElements(
-      analysis,
+      allScores,
       transactions,
-      accountContexts,
+      ringMembersByAccount,
     );
 
     const responseBody: AnalyzeApiResponse = {

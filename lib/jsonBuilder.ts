@@ -1,6 +1,7 @@
 import type {
   AnalysisResult,
   FraudRing,
+  ProcessingStepTiming,
   SuspiciousAccount,
 } from "@/types";
 
@@ -9,6 +10,7 @@ export function buildJsonResult(
   fraudRings: FraudRing[],
   totalAccountsAnalyzed: number,
   processingTimeSeconds: number,
+  processingTimeBreakdown?: ProcessingStepTiming[],
 ): AnalysisResult {
   const sortedSuspicious = [...suspiciousAccounts].sort((a, b) => {
     if (b.suspicion_score !== a.suspicion_score) {
@@ -33,6 +35,7 @@ export function buildJsonResult(
       fraud_rings_detected: sortedRings.length,
       processing_time_seconds:
         Math.round(processingTimeSeconds * 10) / 10,
+      processing_time_breakdown: processingTimeBreakdown,
     },
   };
 }

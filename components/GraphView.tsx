@@ -1,17 +1,14 @@
 "use client";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-expect-error no types published for this package
-import CytoscapeComponent from "react-cytoscapejs";
-import type cytoscape from "cytoscape";
+import Graph from "graphology";
+import forceAtlas2 from "graphology-layout-forceatlas2";
 import type { AnalyzeApiResponse } from "@/types";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type GraphViewProps = {
   result: AnalyzeApiResponse;
 };
 
-/** Risk score → color mapping. Node color derived only from score range. */
 const RISK_LEVELS = [
   { min: 0, max: 20, label: "Normal / Very Low", color: "#86efac" },
   { min: 20, max: 40, label: "Low", color: "#eab308" },
@@ -25,9 +22,16 @@ function getRiskColor(score: number): string {
   return level?.color ?? RISK_LEVELS[0]!.color;
 }
 
+/** Label text color: dark on light nodes, white on dark (severe) nodes */
+function getLabelColor(score: number): string {
+  return score >= 80 ? "#ffffff" : "#171717";
+}
+
 export function GraphView({ result }: GraphViewProps) {
-  const [isClient, setIsClient] = useState(false);
-  const [activeNode, setActiveNode] = useState<{
+  const containerRef = useRef<HTMLDivElement>(null);
+  const sigmaRef = useRef<any>(null);
+
+  const [hoveredNode, setHoveredNode] = useState<{
     id: string;
     displayId: string;
     suspicion_score: number;
@@ -38,153 +42,173 @@ export function GraphView({ result }: GraphViewProps) {
     y: number;
   } | null>(null);
 
+  const nodeIndex = useMemo(() => {
+    const idx = new Map<string, (typeof result.graphNodes)[0]>();
+    for (const n of result.graphNodes) {
+      idx.set(n.id, n);
+    }
+    return idx;
+  }, [result.graphNodes]);
+
   useEffect(() => {
-    setIsClient(true);
-  }, []);
+    if (!containerRef.current) return;
 
-  const elements = useMemo(() => {
-    const nodes = result.graphNodes.map((node) => {
-      const score = node.suspicion_score;
-      const color = getRiskColor(score);
-      const isSuspicious = score > 0;
-      const displayId = node.id.replace(/^ACC_/, "");
-      const riskLabel =
-        RISK_LEVELS.find((r) => score >= r.min && score < r.max)?.label ??
-        RISK_LEVELS[0]!.label;
+    let killed = false;
 
-      return {
-        data: {
-          id: node.id,
+    async function init() {
+      // ✅ Browser-only import
+      const { default: Sigma } = await import("sigma");
+
+      if (killed || !containerRef.current) return;
+
+      const graph = new Graph();
+
+      const n = result.graphNodes.length;
+      const r = Math.max(100, Math.sqrt(n) * 20);
+
+      // --- Add nodes with random initial positions (NOT a circle) ---
+      for (let i = 0; i < n; i += 1) {
+        const node = result.graphNodes[i]!;
+        const score = node.suspicion_score;
+        const color = getRiskColor(score);
+        const isSuspicious = score >= 40;
+        const displayId = node.id.replace(/^ACC_/, "");
+        const riskLabel =
+          RISK_LEVELS.find((r) => score >= r.min && score < r.max)?.label ??
+          RISK_LEVELS[0]!.label;
+
+        const angle = Math.random() * 2 * Math.PI;
+        const dist = Math.random() * r;
+        const x = dist * Math.cos(angle);
+        const y = dist * Math.sin(angle);
+
+        graph.addNode(node.id, {
+          x,
+          y,
+          size: isSuspicious ? 14 : 8,
+          color,
           label: displayId,
-          displayId,
+          labelColor: getLabelColor(score),
           suspicion_score: score,
+          displayId,
           riskLabel,
           patterns: node.detected_patterns.join(", "),
           ring_id: node.ring_id ?? "",
-        },
-        style: {
-          "background-color": color,
-          "border-width": 0,
-          "border-opacity": 0,
-          "label": displayId,
-          "font-size": isSuspicious ? 10 : 8,
-          "text-valign": "center",
-          "text-halign": "center",
-          "color": score >= 80 ? "#ffffff" : "#171717",
-          width: isSuspicious ? 32 : 20,
-          height: isSuspicious ? 32 : 20,
-        },
-      };
-    });
+        });
+      }
 
-    const edges = result.graphEdges.map((edge) => ({
-      data: {
-        id: `${edge.source}->${edge.target}`,
-        source: edge.source,
-        target: edge.target,
-      },
-    }));
+      // --- Add edges ---
+      const edgeKeys = new Set<string>();
+      for (const e of result.graphEdges) {
+        const key = `${e.source}-${e.target}`;
+        if (edgeKeys.has(key)) continue;
+        edgeKeys.add(key);
+        if (graph.hasNode(e.source) && graph.hasNode(e.target)) {
+          graph.addEdge(e.source, e.target, {});
+        }
+      }
 
-    return [...nodes, ...edges];
-  }, [result]);
+      // --- Run ForceAtlas2 layout ---
+      forceAtlas2.assign(graph, {
+        iterations: Math.min(200, Math.max(50, n)),
+        settings: {
+          gravity: 1,
+          scalingRatio: 10,
+          barnesHutOptimize: n > 500,
+        },
+      });
 
-  const stylesheet = useMemo(
-    () => [
-      {
-        selector: "node",
-        style: {
-          width: 20,
-          height: 20,
-          "border-width": 0,
-          "border-opacity": 0,
-        },
-      },
-      {
-        selector: "edge",
-        style: {
-          "width": 1,
-          "line-color": "#d4d4d8",
-          "target-arrow-color": "#d4d4d8",
-          "target-arrow-shape": "triangle",
-          "curve-style": "bezier",
-        },
-      },
-      {
-        selector: "node:hover",
-        style: {
-          "overlay-opacity": 0.1,
-          "overlay-color": "#0f172a",
-        },
-      },
-    ],
-    [],
-  );
+      // --- Create Sigma renderer ---
+      const sigma = new Sigma(graph, containerRef.current, {
+        allowInvalidContainer: true,
+        renderLabels: true,
+        renderEdgeLabels: false,
+        minCameraRatio: 0.01,
+        maxCameraRatio: 100,
+        defaultNodeColor: "#999",
+        defaultEdgeColor: "#d4d4d8",
+        defaultNodeType: "circle",
+        defaultEdgeType: "line",
+        labelSize: 12,
+        labelWeight: "normal",
+        labelColor: { attribute: "labelColor", color: "#171717" },
+        labelDensity: 0.5,
+        labelRenderedSizeThreshold: 4,
+      });
+
+      // --- Hover tooltip ---
+      sigma.on("enterNode", ({ node }) => {
+        const attr = graph.getNodeAttributes(node);
+        const pos = sigma.graphToViewport({
+          x: attr.x as number,
+          y: attr.y as number,
+        });
+        setHoveredNode({
+          id: node,
+          displayId: (attr.displayId as string) ?? node,
+          suspicion_score: (attr.suspicion_score as number) ?? 0,
+          riskLabel: (attr.riskLabel as string) ?? "",
+          patterns: (attr.patterns as string) ?? "",
+          ring_id: (attr.ring_id as string) ?? "",
+          x: pos.x,
+          y: pos.y,
+        });
+      });
+
+      sigma.on("leaveNode", () => {
+        setHoveredNode(null);
+      });
+
+      sigmaRef.current = sigma;
+    }
+
+    init();
+
+    return () => {
+      killed = true;
+      if (sigmaRef.current) {
+        sigmaRef.current.kill();
+        sigmaRef.current = null;
+      }
+    };
+  }, [result, nodeIndex]);
 
   return (
     <div className="relative h-[520px] w-full rounded-lg border border-zinc-200 bg-white p-2 shadow-sm">
-      {isClient ? (
-        <CytoscapeComponent
-          elements={elements}
-          layout={{ name: "cose", animate: false }}
-          stylesheet={stylesheet}
-          style={{ width: "100%", height: "100%" }}
-          cy={(cyInstance: cytoscape.Core) => {
-            cyInstance.off("mouseover");
-            cyInstance.on("mouseover", "node", (evt) => {
-              const data = evt.target.data();
-              const pos = evt.target.renderedPosition();
-              setActiveNode({
-                id: data.id as string,
-                displayId: (data.displayId as string) ?? data.id,
-                suspicion_score: data.suspicion_score as number,
-                riskLabel: (data.riskLabel as string) ?? "",
-                patterns: (data.patterns as string) ?? "",
-                ring_id: (data.ring_id as string) ?? "",
-                x: pos.x,
-                y: pos.y,
-              });
-            });
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+        style={{ minHeight: 300 }}
+      />
 
-            cyInstance.off("mouseout");
-            cyInstance.on("mouseout", "node", () => {
-              setActiveNode(null);
-            });
-          }}
-        />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center text-xs text-zinc-400">
-          Preparing graph…
-        </div>
-      )}
-
-      {activeNode && (
+      {hoveredNode && (
         <div
           className="pointer-events-none absolute z-10 max-w-xs rounded-md bg-black/90 px-2 py-1.5 text-[11px] text-zinc-100 shadow-lg"
           style={{
-            left: Math.min(activeNode.x + 20, 400),
-            top: activeNode.y + 20,
+            left: Math.min(hoveredNode.x + 20, 400),
+            top: hoveredNode.y + 20,
           }}
         >
           <div className="space-y-0.5">
             <div>
               <span className="font-semibold">Account:</span>{" "}
-              <span className="font-mono">{activeNode.displayId}</span>
+              <span className="font-mono">{hoveredNode.displayId}</span>
             </div>
             <div>
               <span className="font-semibold">Score:</span>{" "}
-              {activeNode.suspicion_score.toFixed(1)}
+              {hoveredNode.suspicion_score.toFixed(1)}
             </div>
             <div>
               <span className="font-semibold">Status:</span>{" "}
-              {activeNode.riskLabel}
+              {hoveredNode.riskLabel}
             </div>
             <div>
               <span className="font-semibold">Ring:</span>{" "}
-              {activeNode.ring_id || "—"}
+              {hoveredNode.ring_id || "—"}
             </div>
             <div>
               <span className="font-semibold">Patterns:</span>{" "}
-              {activeNode.patterns || "None"}
+              {hoveredNode.patterns || "None"}
             </div>
           </div>
         </div>
@@ -210,4 +234,3 @@ export function GraphView({ result }: GraphViewProps) {
     </div>
   );
 }
-

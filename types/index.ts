@@ -84,11 +84,18 @@ export type FraudRing = {
   risk_score: number;
 };
 
+export type ProcessingStepTiming = {
+  step: string;
+  time_ms: number;
+  pct: number;
+};
+
 export type AnalysisSummary = {
   total_accounts_analyzed: number;
   suspicious_accounts_flagged: number;
   fraud_rings_detected: number;
   processing_time_seconds: number;
+  processing_time_breakdown?: ProcessingStepTiming[];
 };
 
 export type AnalysisResult = {
