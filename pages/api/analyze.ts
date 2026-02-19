@@ -294,9 +294,7 @@ export default function handler(
     );
 
     const suspiciousAccounts = computeSuspicionScores(
-      accountContexts,
-      graph,
-      layeredAccounts,
+      accountContexts
     );
     const totalAccountsAnalyzed = accountContexts.size;
 
