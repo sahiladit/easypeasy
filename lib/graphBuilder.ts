@@ -13,32 +13,21 @@ export function buildGraph(transactions: Transaction[]): GraphData {
   const transactionCounts = new Map<string, number>();
   const timestamps = new Map<string, Date[]>();
   const timeSeries = new Map<string, AccountTimeSeries>();
-  const edges: GraphEdgeWithMeta[] = [];
-
-  // Track already-initialized accounts to skip redundant Map.has() calls
-  const seen = new Set<string>();
+   const edges: GraphEdgeWithMeta[] = [];
 
   const ensureAccount = (accountId: string) => {
-    if (seen.has(accountId)) return;
-    seen.add(accountId);
-    adjacencyOut.set(accountId, new Set());
-    adjacencyIn.set(accountId, new Set());
-    inDegree.set(accountId, 0);
-    outDegree.set(accountId, 0);
-    transactionCounts.set(accountId, 0);
-    timestamps.set(accountId, []);
-    timeSeries.set(accountId, { inbound: [], outbound: [] });
+    if (!adjacencyOut.has(accountId)) adjacencyOut.set(accountId, new Set());
+    if (!adjacencyIn.has(accountId)) adjacencyIn.set(accountId, new Set());
+    if (!inDegree.has(accountId)) inDegree.set(accountId, 0);
+    if (!outDegree.has(accountId)) outDegree.set(accountId, 0);
+    if (!transactionCounts.has(accountId)) transactionCounts.set(accountId, 0);
+    if (!timestamps.has(accountId)) timestamps.set(accountId, []);
+    if (!timeSeries.has(accountId)) {
+      timeSeries.set(accountId, { inbound: [], outbound: [] });
+    }
   };
 
-  // Pre-sort transactions by timestamp so timeSeries and timestamps
-  // are built in order → eliminates the post-build sort passes
-  const sorted = transactions.length > 1
-    ? [...transactions].sort(
-      (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
-    )
-    : transactions;
-
-  for (const tx of sorted) {
+  for (const tx of transactions) {
     const { senderId, receiverId, timestamp, amount } = tx;
 
     ensureAccount(senderId);
@@ -47,11 +36,14 @@ export function buildGraph(transactions: Transaction[]): GraphData {
     adjacencyOut.get(senderId)!.add(receiverId);
     adjacencyIn.get(receiverId)!.add(senderId);
 
-    outDegree.set(senderId, outDegree.get(senderId)! + 1);
-    inDegree.set(receiverId, inDegree.get(receiverId)! + 1);
+    outDegree.set(senderId, (outDegree.get(senderId) ?? 0) + 1);
+    inDegree.set(receiverId, (inDegree.get(receiverId) ?? 0) + 1);
 
-    transactionCounts.set(senderId, transactionCounts.get(senderId)! + 1);
-    transactionCounts.set(receiverId, transactionCounts.get(receiverId)! + 1);
+    transactionCounts.set(senderId, (transactionCounts.get(senderId) ?? 0) + 1);
+    transactionCounts.set(
+      receiverId,
+      (transactionCounts.get(receiverId) ?? 0) + 1,
+    );
 
     timestamps.get(senderId)!.push(timestamp);
     timestamps.get(receiverId)!.push(timestamp);
@@ -73,8 +65,14 @@ export function buildGraph(transactions: Transaction[]): GraphData {
     });
   }
 
-  // Timestamps and timeSeries are already sorted because we pre-sorted
-  // the transactions. No post-build sort passes needed.
+  for (const [, series] of timeSeries) {
+    series.inbound.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    series.outbound.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  }
+
+  for (const [, ts] of timestamps) {
+    ts.sort((a, b) => a.getTime() - b.getTime());
+  }
 
   return {
     adjacencyOut,
@@ -87,3 +85,4 @@ export function buildGraph(transactions: Transaction[]): GraphData {
     edges,
   };
 }
+
