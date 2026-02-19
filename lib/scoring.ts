@@ -111,8 +111,10 @@ function scoreSmurfing(count: number): number {
 }
 
 export function computeSuspicionScores(
-  context: Map<string, AccountScoreContext>,
-): SuspiciousAccount[] {
+  accountContexts: Map<string, AccountContext>,
+  graph: Map<string, Set<string>>,
+  layeredAccounts: Set<string>
+) : SuspiciousAccount[] {
   const suspicious: SuspiciousAccount[] = [];
 
   for (const ctx of context.values()) {
