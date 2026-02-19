@@ -115,7 +115,7 @@ export function computeSuspicionScores(
 ): SuspiciousAccount[] {
   const suspicious: SuspiciousAccount[] = [];
 
-  for (const ctx of contexts.values()) {
+  for (const ctx of context.values()) {
     let score = 0;
 
     if (ctx.cycleLength === 3) score += 45;
