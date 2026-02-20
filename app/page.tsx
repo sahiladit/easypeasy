@@ -1,151 +1,75 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type {
-  AnalyzeApiResponse,
-  GraphData,
-  Transaction,
-} from "@/types";
+import { useMemo, useState, useCallback } from "react";
+import type { AnalyzeApiResponse, GraphNodeInfo } from "@/types";
 import { UploadForm } from "@/components/UploadForm";
 import { GraphView } from "@/components/GraphView";
 import { RingTable } from "@/components/RingTable";
 import { SummaryPanel } from "@/components/SummaryPanel";
-import { buildGraph } from "@/lib/graphBuilder";
 
-const WINDOW_HOURS = 72;
-const WINDOW_MS = WINDOW_HOURS * 60 * 60 * 1000;
+// ─── helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Recency weighting: the most recent 72 hours contribute 0.7 weight
- * to the displayed metric. The remaining weight (0.3) comes from
- * baseline/lifetime behavior.
- *
- * Displayed value at time t:
- *   metric = 0.7 * (tx count in last 72h / 72) + 0.3 * (cumulative tx / span hours)
- * i.e. weighted average of recent rate and overall rate.
- */
-function buildTimeSeriesPoints(
-  graph: GraphData | null,
-  accountId: string | null
-): { t: number; value: number }[] {
-  if (!graph || !accountId) return [];
-
-  const series = graph.timeSeries.get(accountId);
-  if (!series) return [];
-
-  const events = [...series.inbound, ...series.outbound].sort(
-    (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
-  );
-  if (events.length === 0) return [];
-
-  const firstTs = events[0]!.timestamp.getTime();
-  const points: { t: number; value: number }[] = [];
-  let start = 0;
-
-  for (let i = 0; i < events.length; i += 1) {
-    const t = events[i]!.timestamp.getTime();
-    const windowStart = t - WINDOW_MS;
-
-    while (start <= i && events[start]!.timestamp.getTime() < windowStart) {
-      start += 1;
-    }
-    const windowCount = i - start + 1;
-    const recentRate = windowCount / WINDOW_HOURS;
-
-    const spanHours = Math.max(1, (t - firstTs) / (60 * 60 * 1000));
-    const overallRate = (i + 1) / spanHours;
-
-    const weighted = 0.7 * recentRate + 0.3 * overallRate;
-    points.push({ t, value: weighted });
-  }
-  return points;
+function severityLabel(score: number): { label: string; color: string } {
+  if (score >= 70) return { label: "SEVERE", color: "text-red-600" };
+  if (score >= 35) return { label: "SUSPICIOUS", color: "text-amber-600" };
+  return { label: "NORMAL", color: "text-emerald-600" };
 }
 
-function TimeSeriesChart({
-  points,
-  title,
-}: {
-  points: { t: number; value: number }[];
-  title: string;
-}) {
-  if (points.length === 0) {
-    return (
-      <div className="flex h-40 items-center justify-center rounded-md border border-dashed border-zinc-200 bg-zinc-50 text-xs text-zinc-500">
-        No transaction data for this node
-      </div>
-    );
-  }
+function buildPrompt(node: GraphNodeInfo): string {
+  const { label } = severityLabel(node.suspicion_score);
+  const patterns =
+    node.detected_patterns.length > 0
+      ? node.detected_patterns.join(", ")
+      : "none";
 
-  const minT = points[0]!.t;
-  const maxT = points[points.length - 1]!.t;
-  const maxVal = Math.max(...points.map((p) => p.value), 0.001);
-  const w = 360;
-  const h = 140;
-  const pad = { L: 36, R: 12, T: 12, B: 24 };
-  const innerW = w - pad.L - pad.R;
-  const innerH = h - pad.T - pad.B;
+  return `You are a financial forensics analyst reviewing an account flagged by an automated fraud detection engine called RIFT 2026.
 
-  const pathD = points
-    .map((p, i) => {
-      const x =
-        pad.L +
-        (innerW * (p.t - minT)) / Math.max(1, maxT - minT);
-      const y = pad.T + innerH * (1 - p.value / maxVal);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
+Account ID: ${node.id}
+Suspicion Score: ${node.suspicion_score.toFixed(1)} / 100  →  ${label}
+Ring ID: ${node.ring_id || "not assigned to any fraud ring"}
+Detected Patterns: ${patterns}
 
-  return (
-    <div className="rounded-md border border-zinc-200 bg-white p-3">
-      <div className="mb-1 text-xs font-semibold text-zinc-800">{title}</div>
-      <svg viewBox={`0 0 ${w} ${h}`} className="h-36 w-full max-w-full">
-        <path
-          d={pathD}
-          fill="none"
-          stroke="#2563eb"
-          strokeWidth={1.5}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-      <div className="mt-1 flex justify-between text-[10px] text-zinc-500">
-        <span>Time</span>
-        <span>
-          Tx rate (72h weighted, 0.7 recent + 0.3 baseline) — tx/hour
-        </span>
-      </div>
-    </div>
-  );
+Write a concise 3–5 sentence plain-English explanation for a compliance officer. Cover:
+1. Why this account received this score (reference the specific patterns above).
+2. What the detected patterns mean in the context of money muling / layered fraud.
+3. The recommended next step (e.g. escalate, monitor, clear).
+
+Be direct and professional. Do not repeat the raw numbers verbatim — interpret them.`;
 }
+
+// ─── main page ──────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [result, setResult] = useState<AnalyzeApiResponse | null>(null);
   const [error, setError] = useState<string>("");
-  const [transactions, setTransactions] = useState<Transaction[] | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [explanation, setExplanation] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string>("");
+  const [explanation, setExplanation] = useState<string>("");
   const [isExplaining, setIsExplaining] = useState(false);
-
-  const graphData = useMemo<GraphData | null>(() => {
-    if (!transactions?.length) return null;
-    return buildGraph(transactions);
-  }, [transactions]);
-
-  const timeSeriesPoints = useMemo(
-    () => buildTimeSeriesPoints(graphData, selectedNodeId),
-    [graphData, selectedNodeId]
-  );
+  const [explainError, setExplainError] = useState<string>("");
 
   const downloadableJson = useMemo(() => {
     if (!result) return null;
     return JSON.stringify(result.analysis, null, 2);
   }, [result]);
 
+  // Sort nodes: highest score first, then alphabetically
+  const sortedNodes = useMemo(() => {
+    if (!result) return [];
+    return [...result.graphNodes].sort(
+      (a, b) =>
+        b.suspicion_score - a.suspicion_score ||
+        a.id.localeCompare(b.id),
+    );
+  }, [result]);
+
+  const selectedNode = useMemo(
+    () => result?.graphNodes.find((n) => n.id === selectedNodeId) ?? null,
+    [result, selectedNodeId],
+  );
+
   const handleDownloadJson = () => {
     if (!downloadableJson) return;
-    const blob = new Blob([downloadableJson], {
-      type: "application/json",
-    });
+    const blob = new Blob([downloadableJson], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -154,99 +78,54 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const handleNodeChange = (nodeId: string | null) => {
-    setSelectedNodeId(nodeId);
-    setExplanation(null);
-  };
-
-  const handleExplain = async () => {
-    if (!result || !selectedNodeId || !graphData) return;
-
+  const handleExplain = useCallback(async () => {
+    if (!selectedNode) return;
     setIsExplaining(true);
-    setExplanation(null);
+    setExplanation("");
+    setExplainError("");
 
     try {
-      const node = result.graphNodes.find((n) => n.id === selectedNodeId);
-      const displayId = selectedNodeId.replace(/^ACC_/, "");
-      const suspicious = result.analysis.suspicious_accounts.find(
-        (a) => a.account_id === selectedNodeId
-      );
-      const flagged = !!suspicious || (node?.suspicion_score ?? 0) > 0;
-
-      const inDegree = graphData.inDegree.get(selectedNodeId) ?? 0;
-      const outDegree = graphData.outDegree.get(selectedNodeId) ?? 0;
-      const totalTx = graphData.transactionCounts.get(selectedNodeId) ?? 0;
-
-      const points = buildTimeSeriesPoints(graphData, selectedNodeId);
-      const maxRate = points.length
-        ? Math.max(...points.map((p) => p.value))
-        : 0;
-      const avgRate =
-        points.length > 0
-          ? points.reduce((s, p) => s + p.value, 0) / points.length
-          : 0;
-
-      const metrics = {
-        node_id: selectedNodeId,
-        display_id: displayId,
-        suspicion_score: node?.suspicion_score ?? 0,
-        flagged,
-        detected_patterns: node?.detected_patterns ?? [],
-        ring_id: node?.ring_id ?? null,
-        in_degree: inDegree,
-        out_degree: outDegree,
-        total_transactions: totalTx,
-        time_series: {
-          points_count: points.length,
-          max_weighted_rate_tx_per_hour: maxRate,
-          avg_weighted_rate_tx_per_hour: avgRate,
-          recency_weighting:
-            "0.7 * (tx in last 72h / 72) + 0.3 * (cumulative tx / span hours)",
-        },
-        thresholds: {
-          cycle_3: 45,
-          cycle_4: 40,
-          cycle_5: 35,
-          smurfing_10_19: 25,
-          smurfing_20_29: 35,
-          smurfing_30_plus: 45,
-          layered_shell: 40,
-          high_velocity: 15,
-          pattern_bonus_2_plus: 20,
-          score_range: [0, 100],
-        },
-        decision: flagged ? "flagged" : "not_flagged",
-      };
-
-      const res = await fetch("/api/explain-node", {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          instructions:
-            "Explain this node's risk score using ONLY the provided metrics, thresholds, and decision. Be factual. Cover: key metrics, observed patterns, why patterns affected the score, why flagged or not. No speculation or marketing language.",
-          metrics,
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: buildPrompt(selectedNode) }],
         }),
       });
 
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(err.error ?? "Explanation request failed");
-      }
+      if (!response.ok) throw new Error("LLM request failed.");
 
-      const body = (await res.json()) as { explanation?: string };
-      setExplanation(body.explanation ?? "No explanation returned.");
-    } catch (e) {
-      setExplanation(
-        e instanceof Error ? e.message : "Failed to get explanation."
-      );
+      const data = await response.json() as {
+        content: { type: string; text?: string }[];
+      };
+      const text = data.content
+        .map((b) => (b.type === "text" ? (b.text ?? "") : ""))
+        .join("")
+        .trim();
+
+      setExplanation(text);
+    } catch {
+      setExplainError("Failed to generate explanation. Please try again.");
     } finally {
       setIsExplaining(false);
     }
+  }, [selectedNode]);
+
+  const handleNodeChange = (id: string) => {
+    setSelectedNodeId(id);
+    setExplanation("");
+    setExplainError("");
   };
+
+  const sv = selectedNode ? severityLabel(selectedNode.suspicion_score) : null;
 
   return (
     <div className="min-h-screen bg-zinc-50">
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">
+
+        {/* ── header ── */}
         <header className="space-y-2">
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
             RIFT 2026 Financial Forensics Engine
@@ -259,23 +138,20 @@ export default function Home() {
           </p>
         </header>
 
+        {/* ── upload + graph ── */}
         <section className="grid gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <div className="space-y-4">
             <UploadForm
               onAnalysisComplete={(data) => {
                 setResult(data);
                 setError("");
-                setSelectedNodeId(data.graphNodes[0]?.id ?? null);
-                setExplanation(null);
+                setSelectedNodeId("");
+                setExplanation("");
               }}
               onError={(message) => {
                 setError(message);
                 setResult(null);
-                setTransactions(null);
-                setSelectedNodeId(null);
-                setExplanation(null);
               }}
-              onTransactionsParsed={(txs) => setTransactions(txs)}
             />
             {error && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -294,7 +170,7 @@ export default function Home() {
                 </button>
                 {downloadableJson && (
                   <div className="max-h-64 overflow-auto rounded-md border border-zinc-200 bg-zinc-950 p-3 text-[11px] text-zinc-100">
-                    <pre className="whitespace-pre-wrap wrap-break-word">
+                    <pre className="whitespace-pre-wrap break-words">
                       <code>{downloadableJson}</code>
                     </pre>
                   </div>
@@ -305,61 +181,7 @@ export default function Home() {
 
           <div className="space-y-4">
             {result ? (
-              <>
-                <div className="flex items-center gap-2">
-                  <label
-                    htmlFor="node-select"
-                    className="shrink-0 text-xs font-medium text-zinc-700"
-                  >
-                    Account:
-                  </label>
-                  <select
-                    id="node-select"
-                    className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-800"
-                    value={selectedNodeId ?? ""}
-                    onChange={(e) =>
-                      handleNodeChange(e.target.value || null)
-                    }
-                  >
-                    <option value="">Select account…</option>
-                    {result.graphNodes.map((n) => (
-                      <option key={n.id} value={n.id}>
-                        {n.id.replace(/^ACC_/, "")} — score{" "}
-                        {n.suspicion_score.toFixed(1)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <TimeSeriesChart
-                  points={timeSeriesPoints}
-                  title="72-hour moving average (recency-weighted tx rate)"
-                />
-
-                <div className="space-y-2 rounded-md border border-zinc-200 bg-white p-3">
-                  <button
-                    type="button"
-                    disabled={
-                      !selectedNodeId || isExplaining || !graphData
-                    }
-                    onClick={handleExplain}
-                    className="w-full rounded-md bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
-                  >
-                    {isExplaining
-                      ? "Explaining…"
-                      : "Explain this node's risk score"}
-                  </button>
-                  {explanation && (
-                    <div className="max-h-48 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-800">
-                      <pre className="whitespace-pre-wrap font-sans">
-                        {explanation}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-
-                <GraphView result={result} />
-              </>
+              <GraphView result={result} />
             ) : (
               <div className="flex h-[480px] items-center justify-center rounded-lg border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">
                 Graph visualization will appear here after analysis.
@@ -368,14 +190,131 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ── node inspector ── */}
         {result && (
-          <section className="mt-4">
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-zinc-800">
+              Account Risk Inspector
+            </h2>
+
+            {/* dropdown */}
+            <div className="flex items-center gap-3">
+              <label
+                htmlFor="node-select"
+                className="shrink-0 text-xs font-medium text-zinc-600"
+              >
+                Select account:
+              </label>
+              <select
+                id="node-select"
+                value={selectedNodeId}
+                onChange={(e) => handleNodeChange(e.target.value)}
+                className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              >
+                <option value="">— choose a node —</option>
+                {sortedNodes.map((n) => {
+                  const { label } = severityLabel(n.suspicion_score);
+                  return (
+                    <option key={n.id} value={n.id}>
+                      {n.id} · {n.suspicion_score.toFixed(1)} · {label}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* selected node info card */}
+            {selectedNode && sv && (
+              <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+                {/* node meta */}
+                <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-sm font-semibold text-zinc-900">
+                      {selectedNode.id}
+                    </p>
+                    {selectedNode.ring_id && (
+                      <p className="mt-0.5 text-xs text-zinc-500">
+                        Ring:{" "}
+                        <span className="font-medium text-zinc-700">
+                          {selectedNode.ring_id}
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                  <div className="text-right">
+                    <p className={`text-sm font-bold ${sv.color}`}>
+                      {sv.label}
+                    </p>
+                    <p className="text-xs text-zinc-500">
+                      Score:{" "}
+                      <span className="font-semibold text-zinc-700">
+                        {selectedNode.suspicion_score.toFixed(1)}
+                      </span>
+                      {" "}/ 100
+                    </p>
+                  </div>
+                </div>
+
+                {/* detected patterns */}
+                <div className="mb-4">
+                  <p className="mb-1.5 text-xs font-medium text-zinc-600">
+                    Detected patterns
+                  </p>
+                  {selectedNode.detected_patterns.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedNode.detected_patterns.map((p) => (
+                        <span
+                          key={p}
+                          className="rounded-full bg-zinc-100 px-2 py-0.5 font-mono text-[10px] text-zinc-700"
+                        >
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-400">None detected</p>
+                  )}
+                </div>
+
+                {/* explain button */}
+                <button
+                  type="button"
+                  onClick={handleExplain}
+                  disabled={isExplaining}
+                  className="w-full rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
+                >
+                  {isExplaining ? "Generating explanation…" : "Explain with AI"}
+                </button>
+
+                {/* explanation output */}
+                {explainError && (
+                  <p className="mt-2 text-xs text-red-600">{explainError}</p>
+                )}
+                {explanation && (
+                  <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+                      AI Forensics Summary
+                    </p>
+                    <p className="text-xs leading-relaxed text-zinc-800 whitespace-pre-wrap">
+                      {explanation}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ── fraud ring table ── */}
+        {result && (
+          <section className="mt-2">
             <h2 className="mb-2 text-sm font-semibold text-zinc-800">
               Fraud Ring Summary
             </h2>
             <RingTable analysis={result.analysis} />
           </section>
         )}
+
       </main>
     </div>
   );
