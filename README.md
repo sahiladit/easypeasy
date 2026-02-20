@@ -31,7 +31,7 @@ The core design goals are:
 
 ## 3. System Architecture
 
-![System Architecture Diagram](ARCHITECTURE_DIAGRAM.png)
+![System Architecture Diagram](Architecture_Diagram.png)
 
 The system is organized as a **modular, pipeline-style architecture** where each stage transforms the data and passes it to the next stage for analysis and visualization.
 
