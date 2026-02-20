@@ -110,9 +110,64 @@ export type GraphEdgeInfo = {
   target: string;
 };
 
+/** Per-stage timing from the analysis pipeline (real measured times). */
+export type PipelineStageTiming = {
+  stageName: string;
+  timeMs: number;
+  /** Percentage of total pipeline time (0–100). */
+  percentOfTotal?: number;
+};
+
+/** End-to-end pipeline timing breakdown for the Processing Time panel hover. */
+export type TimingBreakdown = {
+  totalMs: number;
+  stages: PipelineStageTiming[];
+};
+
+/** Metrics and rules for the explainer LLM (data-grounded only). */
+export type NodeExplainerContext = {
+  nodeId: string;
+  metrics: {
+    inDegree: number;
+    outDegree: number;
+    totalTransactions: number;
+    cycleLength: 0 | 3 | 4 | 5;
+    smurfingInCount: number;
+    smurfingOutCount: number;
+    hasLayeredShell: boolean;
+    highVelocity: boolean;
+    detectedPatterns: DetectionPattern[];
+    suspicionScore: number;
+    ringId: string;
+  };
+  /** Thresholds and rules used by the scoring system (for LLM to reference only). */
+  thresholds: {
+    smurfingInOut: { minToFlag: number; tiers: string };
+    highVelocity: { maxTxIn72h: number };
+    layeredShell: { contributes: number };
+    cycleScores: string;
+    multiPatternBonus: string;
+    degreeMitigation: string;
+    longSpanMitigation: string;
+  };
+  /** Decision from the pipeline: flagged or not. */
+  decision: {
+    flagged: boolean;
+    reason: string;
+  };
+  /** Observations from the pipeline (not from LLM). */
+  observations: string[];
+};
+
 export type AnalyzeApiResponse = {
   analysis: AnalysisResult;
   graphNodes: GraphNodeInfo[];
   graphEdges: GraphEdgeInfo[];
+  /** Transaction timestamps per node (ms) for 72h moving average chart. */
+  nodeTimestamps?: Record<string, number[]>;
+  /** Per-stage timing for Processing Time hover breakdown. */
+  timingBreakdown?: TimingBreakdown;
+  /** Per-node context for the explainer LLM. */
+  nodeExplainerContext?: Record<string, NodeExplainerContext>;
 };
 

@@ -5,19 +5,27 @@ import {
   type AnalysisResult,
   type GraphEdgeInfo,
   type GraphNodeInfo,
+  type PipelineStageTiming,
   type RawCsvRow,
+  type TimingBreakdown,
   type Transaction,
 } from "@/types";
 import { buildGraph } from "@/lib/graphBuilder";
 import { detectSmurfing } from "@/lib/smurfingDetection";
 import { detectLayeredShellAccounts } from "@/lib/layeredDetection";
 import { buildFraudRings } from "@/lib/ringBuilder";
+import { extractFraudRingsFromMule } from "@/lib/sccDetection";
 import {
   buildAccountContexts,
   computeSuspicionScores,
   type AccountScoreContext,
 } from "@/lib/scoring";
 import { buildJsonResult } from "@/lib/jsonBuilder";
+import { buildNodeExplainerContexts } from "@/lib/explainerContext";
+
+function elapsedMs(start: bigint, end: bigint): number {
+  return Number((end - start) / BigInt(1_000_000));
+}
 
 const EXPECTED_HEADER =
   "transaction_id,sender_id,receiver_id,amount,timestamp";
@@ -255,7 +263,8 @@ export default function handler(
     return;
   }
 
-  const startedAt = process.hrtime.bigint();
+  const pipelineStart = process.hrtime.bigint();
+  const stageTimings: { name: string; ms: number }[] = [];
 
   try {
     const { csv } = (req.body ?? {}) as { csv?: string };
@@ -265,18 +274,36 @@ export default function handler(
       return;
     }
 
+    let t0 = process.hrtime.bigint();
     const transactions = validateAndParseCsv(csv);
+    stageTimings.push({ name: "Data loading / preprocessing", ms: elapsedMs(t0, process.hrtime.bigint()) });
 
+    t0 = process.hrtime.bigint();
     const graph = buildGraph(transactions);
-    const smurfingMetrics = detectSmurfing(graph);
-    const layeredAccounts = detectLayeredShellAccounts(graph);
+    stageTimings.push({ name: "Graph build", ms: elapsedMs(t0, process.hrtime.bigint()) });
 
+    t0 = process.hrtime.bigint();
+    const { rings: cycleRings } = extractFraudRingsFromMule(graph);
+    stageTimings.push({ name: "Cycle detection", ms: elapsedMs(t0, process.hrtime.bigint()) });
+
+    t0 = process.hrtime.bigint();
+    const smurfingMetrics = detectSmurfing(graph);
+    stageTimings.push({ name: "Fan-in / Fan-out algorithm", ms: elapsedMs(t0, process.hrtime.bigint()) });
+
+    t0 = process.hrtime.bigint();
+    const layeredAccounts = detectLayeredShellAccounts(graph);
+    stageTimings.push({ name: "Shell layer algorithm", ms: elapsedMs(t0, process.hrtime.bigint()) });
+
+    t0 = process.hrtime.bigint();
     const { rings: fraudRings, ringMembersByAccount } = buildFraudRings(
       graph,
       smurfingMetrics,
       layeredAccounts,
+      { preComputedCycleRings: cycleRings },
     );
+    stageTimings.push({ name: "Ring aggregation", ms: elapsedMs(t0, process.hrtime.bigint()) });
 
+    t0 = process.hrtime.bigint();
     const ringCycleLengths = new Map<string, 3 | 4 | 5>();
     for (const ring of fraudRings) {
       if (ring.pattern_type !== "cycle") continue;
@@ -297,14 +324,24 @@ export default function handler(
       layeredAccounts,
     );
 
-    const suspiciousAccounts = computeSuspicionScores(
-      accountContexts
-    );
+    const suspiciousAccounts = computeSuspicionScores(accountContexts);
     const totalAccountsAnalyzed = accountContexts.size;
 
     const finishedAt = process.hrtime.bigint();
-    const elapsedNs = Number(finishedAt - startedAt);
-    const processingTimeSeconds = elapsedNs / 1_000_000_000;
+    const scoringMs = elapsedMs(t0, finishedAt);
+    stageTimings.push({ name: "Scoring / aggregation", ms: scoringMs });
+
+    const totalMs = elapsedMs(pipelineStart, finishedAt);
+    const processingTimeSeconds = totalMs / 1000;
+
+    const timingBreakdown: TimingBreakdown = {
+      totalMs,
+      stages: stageTimings.map((s) => ({
+        stageName: s.name,
+        timeMs: s.ms,
+        percentOfTotal: totalMs > 0 ? Math.round((s.ms / totalMs) * 1000) / 10 : 0,
+      })),
+    };
 
     const analysis: AnalysisResult = buildJsonResult(
       suspiciousAccounts,
@@ -319,10 +356,23 @@ export default function handler(
       accountContexts,
     );
 
+    const nodeTimestamps: Record<string, number[]> = {};
+    for (const [accountId, dates] of graph.timestamps) {
+      nodeTimestamps[accountId] = dates.map((d) => d.getTime());
+    }
+
+    const nodeExplainerContext = buildNodeExplainerContexts(
+      accountContexts,
+      analysis,
+    );
+
     const responseBody: AnalyzeApiResponse = {
       analysis,
       graphNodes: nodes,
       graphEdges: edges,
+      nodeTimestamps,
+      timingBreakdown,
+      nodeExplainerContext,
     };
 
     res.status(200).json(responseBody);

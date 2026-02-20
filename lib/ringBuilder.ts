@@ -146,8 +146,10 @@ export function buildFraudRings(
   graph: GraphData,
   smurfing: SmurfingMetrics,
   layeredAccounts: Set<string>,
+  options?: { preComputedCycleRings?: FraudRing[] },
 ): { rings: FraudRing[]; ringMembersByAccount: Map<string, string> } {
-  const { rings: cycleRings } = extractFraudRingsFromMule(graph);
+  const cycleRings =
+    options?.preComputedCycleRings ?? extractFraudRingsFromMule(graph).rings;
 
   const prototypes: RingPrototype[] = [
     ...cycleRings.map((r) => ({
