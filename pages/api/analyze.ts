@@ -26,7 +26,17 @@ function parseTimestampStrict(value: string): Date | null {
   const trimmed = value.trim();
 
   // Format 1: YYYY-MM-DD HH:MM:SS (e.g., 2024-01-21 03:01:00)
-  const match1 = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(trimmed);
+  // Format 1: YYYY-MM-DD H:MM:SS or HH:MM:SS
+const match1 = /^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2}):(\d{2})$/.exec(trimmed);
+
+// Format 2: YYYY-MM-DD H:MM or HH:MM
+const match2 = /^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})$/.exec(trimmed);
+
+// Format 3: DD-MM-YYYY H:MM:SS or HH:MM:SS
+const match3 = /^(\d{2})-(\d{2})-(\d{4}) (\d{1,2}):(\d{2}):(\d{2})$/.exec(trimmed);
+
+// Format 4: DD-MM-YYYY H:MM or HH:MM
+const match4 = /^(\d{2})-(\d{2})-(\d{4}) (\d{1,2}):(\d{2})$/.exec(trimmed);
   if (match1) {
     const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match1;
     const year = Number(yearStr);
@@ -49,8 +59,6 @@ function parseTimestampStrict(value: string): Date | null {
     return new Date(ms);
   }
 
-  // Format 2: YYYY-MM-DD HH:MM (e.g., 2024-01-21 03:01) — no seconds
-  const match2 = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(trimmed);
   if (match2) {
     const [, yearStr, monthStr, dayStr, hourStr, minuteStr] = match2;
     const year = Number(yearStr);
@@ -71,8 +79,6 @@ function parseTimestampStrict(value: string): Date | null {
     return new Date(ms);
   }
 
-  // Format 3: DD-MM-YYYY HH:MM:SS (e.g., 21-01-2024 03:01:00)
-  const match3 = /^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2}):(\d{2})$/.exec(trimmed);
   if (match3) {
     const [, dayStr, monthStr, yearStr, hourStr, minuteStr, secondStr] = match3;
     const year = Number(yearStr);
@@ -95,8 +101,6 @@ function parseTimestampStrict(value: string): Date | null {
     return new Date(ms);
   }
 
-  // Format 4: DD-MM-YYYY HH:MM (e.g., 21-01-2024 03:01) — no seconds
-  const match4 = /^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})$/.exec(trimmed);
   if (match4) {
     const [, dayStr, monthStr, yearStr, hourStr, minuteStr] = match4;
     const year = Number(yearStr);
