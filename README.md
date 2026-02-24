@@ -1,4 +1,4 @@
-# Easypeasy Financial Forensics Engine
+# Financial Forensics Engine
 
 **Live Demo URL:**
 [https://easypeasy-orcin.vercel.app](https://easypeasy-orcin.vercel.app)
